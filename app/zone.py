@@ -15,6 +15,7 @@ import copy
 import math
 
 from app import geom, xmlgen, xmleval
+from app.formula import parse_formula
 
 CARTESIAN = {"Cartesian_XYZ": 3, "Cartesian_XY": 2, "Cartesian_XZ": 2, "Cartesian_YZ": 2}
 TOLERANCE = 0.01          # mm
@@ -46,8 +47,24 @@ def check(project: dict, xml: str = None, values: dict = None) -> dict:
         return {"checked": False, "ok": True, "rows": [],
                 "note": f"Not checked for this kinematic type ({kin.get('type') or 'unknown'})."}
     xml = xml if xml is not None else xmlgen.build_xml(project)
-    by_binding = {a["binding"]: a["name"] for a in xmlgen.axis_nodes(project) if a.get("binding")}
-    return check_model(xml, kin["type"], kin_axes(project), by_binding, values)
+    axes = xmlgen.axis_nodes(project)
+    by_binding = {a["binding"]: a["name"] for a in axes if a.get("binding")}
+    if values is None:          # what the viewer applies with every MOTION axis at 0: b of the formula a*value+b
+        values = {}
+        for a in axes:
+            f = parse_formula(a.get("formula")) if a.get("binding") else None
+            values[a["name"]] = f[1] if f else 0.0
+    res = check_model(xml, kin["type"], kin_axes(project), by_binding, values)
+    odd = [a for a in axes if a.get("binding") and (a.get("formula") or "value").strip() != "value"
+           and a["binding"] in [n for n, _ in kin_axes(project)]]
+    if odd:
+        names = ", ".join(f'{a["name"]} ("{a["formula"].strip()}")' for a in odd)
+        res["rows"].append({"name": "Formulas", "ok": False, "value": names,
+                            "note": "The viewer ignores ExpressionScripts for the MCS zones: the zone frame is drawn as if "
+                                    "every formula were \"value\". Build offsets and inversions into the model (axis offset, "
+                                    "invert) to keep the zones right."})
+        res["ok"] = False
+    return res
 
 
 def check_model(xml: str, kin_type: str, kin_axes_: list, by_binding: dict, values: dict = None) -> dict:
@@ -102,7 +119,13 @@ def check_model(xml: str, kin_type: str, kin_axes_: list, by_binding: dict, valu
         det = (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]))
         row("Right-handed", det > 0, f"determinant {det:.3f}",
             "X, Y, Z must form a right-handed frame (the determinant is +1)." if det <= 0 else "Right-handed.")
-    return {"checked": True, "ok": all(r["ok"] for r in rows), "rows": rows, "shift": shift}
+    shift_local = None
+    if shift is not None:
+        try:
+            shift_local = geom.inv3_apply(first["parent"], shift)       # the origin shift as the parent frame sees it
+        except ValueError:
+            shift_local = shift
+    return {"checked": True, "ok": all(r["ok"] for r in rows), "rows": rows, "shift": shift, "shift_local": shift_local}
 
 
 def fix(project: dict, xml: str = None) -> dict:
@@ -115,5 +138,6 @@ def fix(project: dict, xml: str = None) -> dict:
     first = kin_axes(p)[0][0]
     node = next(a for a in xmlgen.axis_nodes(p) if a.get("binding") == first)
     old = node.get("mcs_origin") or [0, 0, 0]
-    node["mcs_origin"] = [round(old[i] + res["shift"][i], 6) for i in range(3)]
+    shift = res.get("shift_local") or res["shift"]
+    node["mcs_origin"] = [round(old[i] + shift[i], 6) for i in range(3)]
     return p

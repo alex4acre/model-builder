@@ -67,3 +67,16 @@ def apply_dir(m, v):
 
 def origin(m):
     return [m[3], m[7], m[11]]
+
+
+def inv3_apply(m, v):
+    """The vector v turned by the inverse of the linear (3x3) part of the 4x4 m (m without scale distortion is a rotation:
+    the transpose; the general inverse is used here)."""
+    a = [[m[r * 4 + c] for c in range(3)] for r in range(3)]
+    det = (a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+           + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]))
+    if abs(det) < 1e-12:
+        raise ValueError("the frame is singular")
+    cof = [[(a[(c + 1) % 3][(r + 1) % 3] * a[(c + 2) % 3][(r + 2) % 3] - a[(c + 1) % 3][(r + 2) % 3] * a[(c + 2) % 3][(r + 1) % 3]) / det
+            for c in range(3)] for r in range(3)]
+    return [sum(cof[r][c] * v[c] for c in range(3)) for r in range(3)]

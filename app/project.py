@@ -9,10 +9,13 @@ import copy
 import math
 import re
 
+from app.formula import check_formula
+
 NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_. -]{0,63}$")
-MESH_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_. ()+-]{0,100}\.stl$", re.IGNORECASE)
+MESH_RE = re.compile(r"^[^/\\\x00-\x1f.][^/\\\x00-\x1f]{0,110}\.stl$", re.IGNORECASE)
 UNITS = ("mm", "m", "inch")
-KINDS = ("part", "axis", "tool")
+KINDS = ("part", "axis", "tool", "frame")
+IDENTITY = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
 AXIS_TYPES = ("rotation", "translation")
 
 
@@ -25,7 +28,7 @@ def check_name(name) -> str:
 
 def check_mesh_file(file) -> str:
     if not isinstance(file, str) or not MESH_RE.match(file) or ".." in file:
-        raise ValueError("A mesh file name is letters, digits, spaces, '_', '-', '.', '(', ')', '+' and ends with .stl")
+        raise ValueError("A mesh file name has no '/' or '\\', does not start with '.' and ends with .stl")
     return file
 
 
@@ -81,9 +84,36 @@ def validate(p) -> dict:
         pl["rotation"] = _vec(pl.get("rotation", [0, 0, 0]), f"mesh {mid!r} rotation")
     ids, names = set(), set()
 
+    def attrs_of(n, key, what):
+        v = n.setdefault(key, {})
+        if not isinstance(v, dict) or any(not isinstance(k, str) or not isinstance(x, str) for k, x in v.items()):
+            raise ValueError(f"{what}: {key!r} must be an object of text values")
+        return v
+
+    def extras_of(n, what):
+        v = n.setdefault("xml_extra", [])
+        if not isinstance(v, list) or any(not isinstance(x, str) for x in v):
+            raise ValueError(f"{what}: 'xml_extra' must be a list of XML texts")
+
+    def matrix_of(n, what, required=False):
+        if n.get("matrix") is None:
+            if required:
+                n["matrix"] = list(IDENTITY)
+            else:
+                n.pop("matrix", None)
+            return
+        n["matrix"] = _vec(n["matrix"], f"{what} matrix", 16)
+
+    def children_of(n, depth):
+        kids = n.setdefault("children", [])
+        if not isinstance(kids, list):
+            raise ValueError("children must be a list")
+        for c in kids:
+            node(c, depth + 1)
+
     def node(n, depth):
         if not isinstance(n, dict) or n.get("kind") not in KINDS:
-            raise ValueError("every tree node has a kind: part, axis or tool")
+            raise ValueError("every tree node has a kind: part, axis, tool or frame")
         if depth > 60:
             raise ValueError("the tree is too deep")
         nid = n.get("id")
@@ -94,6 +124,13 @@ def validate(p) -> dict:
         if not isinstance(nm, str) or not nm.strip():
             raise ValueError("every node needs a name")
         kind = n["kind"]
+        src = bool(n.get("src"))
+        if src:
+            n["src"] = True
+        else:
+            n.pop("src", None)
+        attrs_of(n, "xattrs", nm)
+        extras_of(n, nm)
         if kind == "axis":
             if nm in names:
                 raise ValueError(f"axis name {nm!r} is used twice (model axis names must be unique)")
@@ -113,21 +150,58 @@ def validate(p) -> dict:
             n["binding"] = n.get("binding") or ""
             if not isinstance(n["binding"], str):
                 raise ValueError(f"axis {nm!r}: the binding is a MOTION axis name or empty")
+            n["formula"] = "value" if n.get("formula") is None else n["formula"]
+            try:
+                check_formula(n["formula"])
+            except ValueError as e:
+                raise ValueError(f"axis {nm!r}: {e}") from None
+            if n.get("binding_extra") is not None and not isinstance(n["binding_extra"], dict):
+                raise ValueError(f"axis {nm!r}: 'binding_extra' must be an object")
             if n.get("mcs_origin") is not None:
                 n["mcs_origin"] = _vec(n["mcs_origin"], f"axis {nm!r} mcs_origin")
-            kids = n.setdefault("children", [])
-            if not isinstance(kids, list):
-                raise ValueError("children must be a list")
-            for c in kids:
-                node(c, depth + 1)
+            children_of(n, depth)
+        elif kind == "frame":
+            matrix_of(n, f"frame {nm!r}", required=True)
+            children_of(n, depth)
         elif kind == "part":
-            if n.get("mesh") not in meshes:
+            if n.get("mesh") not in meshes and not (src and not n.get("mesh")):
                 raise ValueError(f"part {nm!r}: mesh {n.get('mesh')!r} is not in the project")
-            n["colour"] = _vec(n.get("colour", [0.6, 0.6, 0.6]), f"part {nm!r} colour")
-            if any(c < 0 or c > 1 for c in n["colour"]):
-                raise ValueError(f"part {nm!r}: colour values are 0 to 1")
+            if n.get("colour") is None and src:
+                n["colour"] = None
+            else:
+                n["colour"] = _vec(n.get("colour", [0.6, 0.6, 0.6]), f"part {nm!r} colour")
+                if not src and any(c < 0 or c > 1 for c in n["colour"]):
+                    raise ValueError(f"part {nm!r}: colour values are 0 to 1")
+            if n.get("alpha") is None and src:
+                n["alpha"] = None
+            else:
+                n["alpha"] = _number(n.get("alpha", 0), f"part {nm!r} alpha")
+            matrix_of(n, f"part {nm!r}")
+            n["bare"] = bool(n.get("bare", False))
+            if n.get("tattrs") is not None:
+                attrs_of(n, "tattrs", nm)
         else:
-            n["position"] = _vec(n.get("position", [0, 0, 0]), f"tool {nm!r} position")
+            matrix_of(n, f"tool {nm!r}")
+            if n.get("matrix"):
+                n["position"] = [n["matrix"][3], n["matrix"][7], n["matrix"][11]]
+            else:
+                n["position"] = _vec(n.get("position", [0, 0, 0]), f"tool {nm!r} position")
+            n["bare"] = bool(n.get("bare", False))
+            if n.get("tattrs") is not None:
+                attrs_of(n, "tattrs", nm)
+
+    for key in ("xml_prolog", "xml_extra", "orphan_bindings"):
+        v = out.get(key)
+        if v is not None and not isinstance(v, list):
+            raise ValueError(f"{key!r} must be a list")
+    for key in ("machine_data", "machine_attrs", "configuration_extra"):
+        v = out.get(key)
+        if v is not None and not isinstance(v, dict):
+            raise ValueError(f"{key!r} must be an object")
+    if out.get("root") not in (None, "mounting", "none"):
+        raise ValueError('"root" is "mounting" or "none"')
+    if out.get("viewer_name") is not None:
+        check_name(out["viewer_name"])
 
     tree = out.setdefault("tree", [])
     if not isinstance(tree, list):

@@ -129,6 +129,27 @@ class ProjectStore:
             self._write(name, location, proj.new_project(name, location))
             return self.get(name)
 
+    def import_project(self, name: str, location: str, project: dict, mesh_files: dict) -> dict:
+        """Create a project from a converted viewer project: {mesh file name: path of the STL to copy}. Nothing is left
+        behind if the document is not valid."""
+        with self.lock:
+            self._check_location(location)
+            self._new_name(name)
+            folder = os.path.join(self.roots[location], name)
+            os.makedirs(os.path.join(folder, "meshes"))
+            try:
+                for f, path in mesh_files.items():
+                    proj.check_mesh_file(f)
+                    shutil.copyfile(path, os.path.join(folder, "meshes", f))
+                p = dict(project)
+                p["name"] = name
+                p.pop("location", None)
+                self._write(name, location, proj.validate(p))
+            except BaseException:
+                shutil.rmtree(folder, ignore_errors=True)
+                raise
+            return self.get(name)
+
     def put(self, name: str, p: dict) -> dict:
         """Save the project document (validated). The name and location come from the URL / the folder."""
         with self.lock:

@@ -9,7 +9,7 @@ Frames (finding R1 in docs/plan.md): the 3D viewer reads rzx/rzy/rzz and x/y/z i
 node. The project stores everything in the assembly frame at the model's zero pose; every node that the generator
 adds around an axis is an identity at that pose, except MCS_Origin (the axis's own pivot is then converted).
 
-Offsets and inversions are always built into the XML (never into an ExpressionScript):
+Offsets and inversions are built into the XML (never into the ExpressionScript, which is the axis' formula, "value" by default):
     model value = offset + s * value,  s = -1 if invert else 1
   - a fixed transform <axis>_Offset around the axis (translation offset*direction, or rotation by offset degrees
     about the direction through the pivot),
@@ -73,38 +73,118 @@ def axis_nodes(project):
     return [n for n in walk(project.get("tree") or []) if n.get("kind") == "axis"]
 
 
+def numh(v):
+    """A number of an imported node: 12 significant digits, so the values of the original file come back unchanged."""
+    s = "%.12g" % v
+    return "0" if s in ("-0", "0") else s
+
+
+def _attr_text(d):
+    return "".join(" %s=%s" % (k, quoteattr(v)) for k, v in (d or {}).items())
+
+
 def build_xml(project: dict) -> str:
+    """The machine_definition XML. An own project (0.1.0 style) gets the Mounting wrapper; an imported one ("root": "none")
+    is written with the structure it was read with (its nodes carry "src": true and keep the attributes the editor does not
+    model, see app/xmlimport.py)."""
     meshes = project.get("meshes") or {}
     ind = lambda n: "  " * n
-    out = ['<machine_definition>', '  <machine_data name=%s units="metric" />' % quoteattr(project["name"]), ""]
-    out.append('  <transform name="Mounting" initialvalue="%s">' % mat_str(geom.IDENTITY))
+    imported = project.get("root") == "none"
+    out = list(project.get("xml_prolog") or [])
+
+    def raw(items, lvl):
+        for t in items or []:
+            out.append(ind(lvl) + t.strip())
+
+    if imported:
+        out.append("<machine_definition%s>" % _attr_text(project.get("machine_attrs")))
+        md = project.get("machine_data") or {}
+        if not md.get("absent"):
+            attrs = _attr_text(md.get("attrs"))
+            if md.get("xml_extra"):
+                out.append("  <machine_data%s>" % attrs)
+                raw(md["xml_extra"], 2)
+                out.append("  </machine_data>")
+            else:
+                out.append("  <machine_data%s />" % attrs)
+        out.append("")
+        base = 1
+    else:
+        out += ['<machine_definition>', '  <machine_data name=%s units="metric" />' % quoteattr(project["name"]), ""]
+        out.append('  <transform name="Mounting" initialvalue="%s">' % mat_str(geom.IDENTITY))
+        base = 2
 
     def emit_part(p, lvl):
-        if p["kind"] == "tool":
-            m = geom.translation(p.get("position") or [0, 0, 0])
-            out.append('%s<transform name=%s initialvalue="%s">' % (ind(lvl), quoteattr(p["name"] + "_Trafo"), mat_str(m)))
-            out.append('%s<geometry name=%s objtype="tool" %s />' % (ind(lvl + 1), quoteattr(p["name"]), TOOL_ATTRS))
+        src = bool(p.get("src"))
+        f = numh if src else num
+        tool = p["kind"] == "tool"
+        mesh = None if tool else meshes.get(p.get("mesh"))
+        if not tool and mesh is None and not src:
+            raise ValueError(f"part {p['name']!r}: mesh {p.get('mesh')!r} is not in the project")
+        wrapped = not p.get("bare")
+        if wrapped:
+            if p.get("matrix"):
+                m = p["matrix"]
+            elif tool:
+                m = geom.translation(p.get("position") or [0, 0, 0])
+            else:
+                m = mesh_matrix(mesh)
+            out.append('%s<transform name=%s initialvalue="%s"%s>' % (
+                ind(lvl), quoteattr(p.get("transform_name") or p["name"] + "_Trafo"),
+                ",".join(f(v) for v in m), _attr_text(p.get("tattrs"))))
+            lvl += 1
+        if tool:
+            attrs = 'name=%s objtype="tool"' % quoteattr(p["name"]) + (_attr_text(p.get("xattrs")) if src else " " + TOOL_ATTRS)
         else:
-            mesh = meshes.get(p.get("mesh"))
-            if mesh is None:
-                raise ValueError(f"part {p['name']!r}: mesh {p.get('mesh')!r} is not in the project")
-            c = p.get("colour") or [0.6, 0.6, 0.6]
-            out.append('%s<transform name=%s initialvalue="%s">' % (ind(lvl), quoteattr(p["name"] + "_Trafo"),
-                                                                    mat_str(mesh_matrix(mesh))))
-            out.append('%s<geometry name=%s objtype="geometry" alpha="0" clrr="%s" clrg="%s" clrb="%s" geo=%s />'
-                       % (ind(lvl + 1), quoteattr(p["name"]), num(c[0]), num(c[1]), num(c[2]), quoteattr(mesh["file"])))
-        out.append('%s</transform>' % ind(lvl))
+            c = p.get("colour")
+            alpha = p.get("alpha")
+            attrs = "name=%s objtype=%s" % (quoteattr(p["name"]), quoteattr(p.get("objtype") or "geometry"))
+            if alpha is not None:
+                attrs += ' alpha="%s"' % f(alpha)
+            if c is not None:
+                attrs += ' clrr="%s" clrg="%s" clrb="%s"' % (f(c[0]), f(c[1]), f(c[2]))
+            if mesh is not None:
+                attrs += " geo=%s" % quoteattr(mesh["file"])
+            attrs += _attr_text(p.get("xattrs"))
+        if p.get("xml_extra"):
+            out.append("%s<geometry %s>" % (ind(lvl), attrs))
+            raw(p["xml_extra"], lvl + 1)
+            out.append("%s</geometry>" % ind(lvl))
+        else:
+            out.append("%s<geometry %s />" % (ind(lvl), attrs))
+        if wrapped:
+            out.append("%s</transform>" % ind(lvl - 1))
+
+    def emit_frame(fr, lvl):
+        f = numh if fr.get("src") else num
+        out.append('%s<transform name=%s initialvalue="%s"%s>' % (
+            ind(lvl), quoteattr(fr["name"]), ",".join(f(v) for v in fr["matrix"]), _attr_text(fr.get("xattrs"))))
+        emit_level(fr.get("children") or [], lvl + 1)
+        raw(fr.get("xml_extra"), lvl + 1)
+        out.append("%s</transform>" % ind(lvl))
+
+    def emit_node(n, lvl):
+        if n["kind"] in ("part", "tool"):
+            emit_part(n, lvl)
+        elif n["kind"] == "frame":
+            emit_frame(n, lvl)
+        else:
+            emit_axis(n, lvl)
 
     def emit_level(nodes, lvl):
-        for n in nodes:
-            if n["kind"] in ("part", "tool"):
-                emit_part(n, lvl)
-        for n in nodes:
-            if n["kind"] == "axis":
-                emit_axis(n, lvl)
+        if imported:
+            for n in nodes:
+                emit_node(n, lvl)
+            return
+        for kinds in (("part", "tool"), ("frame",), ("axis",)):
+            for n in nodes:
+                if n["kind"] in kinds:
+                    emit_node(n, lvl)
 
     def emit_axis(a, lvl):
         name, rotation = a["name"], a["type"] == "rotation"
+        src = bool(a.get("src"))
+        f = numh if src else num
         s = -1.0 if a.get("invert") else 1.0
         d = list(a["direction"])
         mcs = [float(v) for v in a.get("mcs_origin") or [0, 0, 0]]
@@ -126,27 +206,43 @@ def build_xml(project: dict) -> str:
             lvl += 1
             closers += 1
         r = a.get("range") or [0, 0]
-        attrs = ('name=%s type=%s x="%s" y="%s" z="%s" channelId="0" minvalue="%s" maxvalue="%s" initial_value="%s"'
-                 % (quoteattr(name), quoteattr(a["type"]), num(s * d[0]), num(s * d[1]), num(s * d[2]),
-                    num(r[0]), num(r[1]), num(a.get("initial") or 0)))
-        if rotation:
-            attrs += (' rotationAxisRolloverEnabled="False" rzx="%s" rzy="%s" rzz="%s"'
-                      % (num(pivot[0]), num(pivot[1]), num(pivot[2])))
+        if src:
+            attrs = ('name=%s type=%s x="%s" y="%s" z="%s" minvalue="%s" maxvalue="%s" initial_value="%s"'
+                     % (quoteattr(name), quoteattr(a["type"]), f(s * d[0]), f(s * d[1]), f(s * d[2]),
+                        f(r[0]), f(r[1]), f(a.get("initial") or 0)))
+            if rotation:
+                attrs += ' rzx="%s" rzy="%s" rzz="%s"' % (f(pivot[0]), f(pivot[1]), f(pivot[2]))
+            attrs += _attr_text(a.get("xattrs"))
+        else:
+            attrs = ('name=%s type=%s x="%s" y="%s" z="%s" channelId="0" minvalue="%s" maxvalue="%s" initial_value="%s"'
+                     % (quoteattr(name), quoteattr(a["type"]), num(s * d[0]), num(s * d[1]), num(s * d[2]),
+                        num(r[0]), num(r[1]), num(a.get("initial") or 0)))
+            if rotation:
+                attrs += (' rotationAxisRolloverEnabled="False" rzx="%s" rzy="%s" rzz="%s"'
+                          % (num(pivot[0]), num(pivot[1]), num(pivot[2])))
+            attrs += _attr_text(a.get("xattrs"))
         out.append("%s<axis %s>" % (ind(lvl), attrs))
         if has_mcs:
             out.append('%s<transform name="MCS_Origin_Inverse" initialvalue="%s">'
                        % (ind(lvl + 1), mat_str(geom.translation([-v for v in mcs]))))
             emit_level(a.get("children") or [], lvl + 2)
+            raw(a.get("xml_extra"), lvl + 2)
             out.append("%s</transform>" % ind(lvl + 1))
         else:
             emit_level(a.get("children") or [], lvl + 1)
+            raw(a.get("xml_extra"), lvl + 1)
         out.append("%s</axis>" % ind(lvl))
         for _ in range(closers):
             lvl -= 1
             out.append("%s</transform>" % ind(lvl))
 
-    emit_level(project.get("tree") or [], 2)
-    out += ["  </transform>", "</machine_definition>", ""]
+    emit_level(project.get("tree") or [], base)
+    if imported:
+        raw(project.get("xml_extra"), 1)
+    else:
+        out.append("  </transform>")
+        raw(project.get("xml_extra"), 1)
+    out += ["</machine_definition>", ""]
     return "\n".join(out)
 
 
@@ -161,24 +257,48 @@ def used_meshes(project: dict) -> list:
 
 
 def configuration(project: dict) -> dict:
-    """Body for PUT /3dviewer/api/v2/projects/<name>/configuration: every bound model axis follows its ctrlX axis.
-    The expression is always "value" (offsets and inversions are in the XML). Unbound axes are left out."""
-    return {"ConfiguredAxis": [{"ModelAxisName": a["name"], "ConnectionType": "datalayerAxes",
-                                "DatalayerNode": a["binding"], "ExpressionScript": "value"}
-                               for a in axis_nodes(project) if a.get("binding")],
-            "ToolNodes": {"deletion": {"useDataLayerNode": False}},
-            "IsDemoModelDeleted": False, "IsBackgroundEnabled": False}
+    """Body for PUT /3dviewer/api/v2/projects/<name>/configuration: every bound model axis follows its ctrlX axis. The
+    ExpressionScript is the axis' formula, written unchanged ("value" by default). Unbound axes are left out. An imported
+    project also returns the entries it could not place on an axis and the settings it found in the viewer's own
+    configuration (everything but the TrackId)."""
+    entries, bound = [], set()
+    for a in axis_nodes(project):
+        if a.get("binding"):
+            e = {"ModelAxisName": a["name"], "ConnectionType": "datalayerAxes", "DatalayerNode": a["binding"],
+                 "ExpressionScript": a.get("formula") or "value"}
+            for k, v in (a.get("binding_extra") or {}).items():
+                if k not in ("ModelAxisName", "DatalayerNode", "ExpressionScript"):
+                    e[k] = v
+            entries.append(e)
+            bound.add(a["name"])
+    for e in project.get("orphan_bindings") or []:
+        if isinstance(e, dict) and e.get("ModelAxisName") not in bound:
+            entries.append(e)
+    cfg = {"ConfiguredAxis": entries, "ToolNodes": {"deletion": {"useDataLayerNode": False}},
+           "IsDemoModelDeleted": False, "IsBackgroundEnabled": False}
+    for k, v in (project.get("configuration_extra") or {}).items():
+        if k not in ("ConfiguredAxis", "TrackId"):
+            cfg[k] = v
+    return cfg
 
 
-def generate(project: dict, read_mesh) -> dict:
-    """{"name", "files": {file name: bytes} (XML + the STLs the parts use), "configuration"}.
-    read_mesh(file name) -> bytes."""
-    files = {project["name"] + ".xml": build_xml(project).encode("utf-8")}
+def generate(project: dict, read_mesh, name: str = None) -> dict:
+    """{"name", "files": {file name: bytes} (XML + the STLs the parts use), "configuration", "missing": [mesh files]}.
+    name = the project's name in the 3D viewer (default: the project's name). read_mesh(file name) -> bytes; a mesh file
+    an imported project never had is left out and listed in "missing"."""
+    name = name or project["name"]
+    files = {name + ".xml": build_xml(project).encode("utf-8")}
     meshes = project.get("meshes") or {}
+    missing = []
     for mid in used_meshes(project):
         f = meshes[mid]["file"]
-        files[f] = read_mesh(f)
-    return {"name": project["name"], "files": files, "configuration": configuration(project)}
+        try:
+            files[f] = read_mesh(f)
+        except KeyError:
+            if not project.get("root") == "none":
+                raise
+            missing.append(f)
+    return {"name": name, "files": files, "configuration": configuration(project), "missing": missing}
 
 
 def zip_bytes(files: dict) -> bytes:

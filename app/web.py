@@ -48,6 +48,7 @@ class RequestHandler(ApiHandler):
         ("POST", r"/projects/([^/]+)/upload-to-viewer", "upload_to_viewer"),
         ("GET", r"/viewer/projects", "viewer_projects"),
         ("POST", r"/viewer/projects/([^/]+)/open", "viewer_open"),
+        ("POST", r"/viewer/projects/([^/]+)/import", "viewer_import"),
         ("GET", r"/viewer/cache/([^/]+)", "viewer_cache"),
         ("POST", r"/viewer/zone", "viewer_zone"),
         ("GET", r"/motion/axes", "motion_axes"),
@@ -163,8 +164,9 @@ class RequestHandler(ApiHandler):
 
     def upload_to_viewer(self, name):
         replace = _flag(self.q("replace", "0"))
+        as_name = self.q("as", "") or None     # upload under a new name (must be free)
         self.read_body()                       # an empty or {} body
-        self.send_json(200, core.upload(name, self.token(), replace))
+        self.send_json(200, core.upload(name, self.token(), replace, as_name))
 
     # --- 3D viewer projects, read-only ------------------------------------------------------------
 
@@ -174,6 +176,11 @@ class RequestHandler(ApiHandler):
     def viewer_open(self, name):
         self.read_body()
         self.send_json(200, core.viewer_open(name, self.token()))
+
+    def viewer_import(self, name):
+        d = self.read_json()
+        self.send_json(201, core.import_viewer(name, d.get("name") or name, d.get("location") or "config",
+                                               bool(d.get("confirm")), self.token()))
 
     def viewer_cache(self, file):
         path = core.viewer_file(file)

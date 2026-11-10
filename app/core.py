@@ -7,7 +7,7 @@ import shutil
 import threading
 import time
 
-from app import motion, storage, viewanalysis, viewcache, xmlgen, zone
+from app import motion, project as proj, storage, viewanalysis, viewcache, xmlgen, xmlimport, zone
 from app.framework.bus import BusError
 from app.framework.web import HttpError
 from app.viewer import ViewerNotInstalled
@@ -28,9 +28,9 @@ class Core:
 
     # --- generated model --------------------------------------------------------------------------
 
-    def generate(self, name: str) -> dict:
+    def generate(self, name: str, viewer_name: str = None) -> dict:
         p = self.store.get(name)
-        return xmlgen.generate(p, lambda f: self.store.read_mesh(name, f))
+        return xmlgen.generate(p, lambda f: self.store.read_mesh(name, f), viewer_name)
 
     def xml(self, name: str) -> str:
         return xmlgen.build_xml(self.store.get(name))
@@ -57,21 +57,68 @@ class Core:
 
     # --- 3D viewer --------------------------------------------------------------------------------
 
-    def upload(self, name: str, token: str, replace: bool) -> dict:
-        gen = self.generate(name)
-        viewer = self.viewer_factory(token)
-        exists = name in viewer.projects()
-        if exists and not replace:
-            raise HttpError(409, f"The 3D viewer has a project named {name!r}. Uploading replaces its files, its axis "
-                                 "bindings and its library picture.", "EXISTS")
-        viewer.create(name, gen["files"])
-        viewer.configure(name, gen["configuration"])         # always: a (re-)upload clears the bindings
+    def upload(self, name: str, token: str, replace: bool, as_name: str = None) -> dict:
+        """Send the project to the 3D viewer under its viewer name (default: the project's name). as_name: a new name that
+        must be free; it becomes the project's viewer name."""
         p = self.store.get(name)
+        viewer = self.viewer_factory(token)
+        if as_name is not None:
+            proj.check_name(as_name)
+            target = as_name
+        else:
+            target = p.get("viewer_name") or name
+        exists = target in [str(n) for n in viewer.projects()]
+        if as_name is not None and exists:
+            raise HttpError(409, f"The 3D viewer has a project named {target!r} already; choose another name.", "NAME_TAKEN")
+        if exists and not replace:
+            raise HttpError(409, f"Replaces {target} in the 3D viewer: its files are replaced, the axis bindings are sent "
+                                 "again and the library picture is redrawn.", "EXISTS")
+        gen = self.generate(name, target)
+        viewer.create(target, gen["files"])
+        viewer.configure(target, gen["configuration"])         # always: a (re-)upload clears the bindings
+        p = self.store.get(name)
+        p["viewer_name"] = target
         p.setdefault("extra", {})["uploaded_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         self.store.put(name, p)
         bound = len(gen["configuration"]["ConfiguredAxis"])
-        return {"name": name, "replaced": exists, "files": len(gen["files"]), "bound_axes": bound,
-                "uploaded_at": p["extra"]["uploaded_at"]}
+        return {"name": name, "viewer_name": target, "replaced": exists, "files": len(gen["files"]), "bound_axes": bound,
+                "missing_meshes": gen["missing"], "uploaded_at": p["extra"]["uploaded_at"]}
+
+    # --- import of a viewer project as an editable project ------------------------------------------
+
+    def import_viewer(self, viewer_name: str, name: str, location: str, confirm: bool, token: str) -> dict:
+        """Download the viewer project into a temporary folder (the read-only view's cache is not touched), convert it and
+        create the project. If the conversion has to drop something, nothing is created until confirm is true."""
+        name = (name or viewer_name).strip()
+        proj.check_name(name)
+        if location not in storage.LOCATIONS:
+            raise HttpError(400, "The location is 'config' or 'common'")
+        self.store._new_name(name)                       # Conflict (409) before anything is downloaded
+        viewer = self.viewer_factory(token)
+        if viewer_name not in [str(n) for n in viewer.projects()]:
+            raise HttpError(404, f"The 3D viewer has no project named {viewer_name!r}")
+        tmp = os.path.join(os.path.dirname(self.cache_root.rstrip(os.sep)), "import-tmp")
+        shutil.rmtree(tmp, ignore_errors=True)
+        try:
+            try:
+                v = viewcache.open_project(viewer, viewer_name, tmp)
+                conv = xmlimport.convert(v["xml"], v["configuration"], [f["name"] for f in v["files"]])
+            except (viewcache.ExtractError, xmlimport.ImportProblem) as e:
+                raise HttpError(422, f"The project {viewer_name!r} cannot be imported: {e}", "IMPORT_FAILED") from None
+            report = conv["report"]
+            if report["dropped"] and not confirm:
+                raise HttpError(409, "Importing would drop: " + "; ".join(report["dropped"]), "DROPS")
+            p = conv["project"]
+            p["viewer_name"] = viewer_name
+            p["extra"] = {"imported_from": viewer_name}
+            try:
+                created = self.store.import_project(name, location, p, {f: os.path.join(v["dir"], f) for f in conv["mesh_files"]})
+            except ValueError as e:
+                raise HttpError(422, f"The project {viewer_name!r} cannot be imported: {e}", "IMPORT_FAILED") from None
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.log(f"3D viewer project {viewer_name!r} imported as {name!r}: {report['counts']}")
+        return {"project": created, "report": report}
 
     # --- read-only view of existing 3D viewer projects ---------------------------------------------
 
