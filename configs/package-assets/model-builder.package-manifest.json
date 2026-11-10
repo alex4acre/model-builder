@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.boschrexroth.com/ctrlx-automation/ctrlx-core/apps/package-manifest/package-manifest.v1.6.schema.json",
+  "version": "1.0.0",
+  "id": "model-builder",
+  "services": {
+    "proxyMapping": [
+      {
+        "name": "model-builder.web",
+        "url": "/model-builder",
+        "binding": "unix://{$SNAP_DATA}/package-run/model-builder/web.sock",
+        "restricted": [
+          "/model-builder/api"
+        ]
+      }
+    ]
+  },
+  "menus": {
+    "sidebar": [
+      {
+        "id": "model-builder",
+        "title": "3D Model Builder",
+        "icon": "bosch-ic-automation",
+        "link": "/model-builder/?token=${bearertoken}",
+        "target": "embedded",
+        "items": []
+      }
+    ],
+    "overview": [
+      {
+        "id": "model-builder",
+        "title": "3D Model Builder",
+        "description": "Build 3D viewer models from STL files and bind them to ctrlX MOTION axes",
+        "icon": "bosch-ic-automation",
+        "link": "/model-builder/?token=${bearertoken}"
+      }
+    ]
+  },
+  "commands": {
+    "activeConfiguration": {
+      "load": [
+        {
+          "id": "model-builder",
+          "subject": "3D Model Builder configuration",
+          "url": "/model-builder/api/v1/admin/cfg/load"
+        }
+      ],
+      "save": [
+        {
+          "id": "model-builder",
+          "subject": "3D Model Builder configuration",
+          "url": "/model-builder/api/v1/admin/cfg/save"
+        }
+      ]
+    }
+  },
+  "configuration": {
+    "appDirectories": [
+      {
+        "name": "model-builder",
+        "description": "3D Model Builder configuration",
+        "icon": "bosch-ic-automation",
+        "copyOnLoad": true,
+        "writeProtected": false
+      }
+    ],
+    "appPrivateFiles": [
+      "^model-builder/.*\\.tmp$"
+    ]
+  }
+}

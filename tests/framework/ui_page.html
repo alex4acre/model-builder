@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: MIT -->
+<!-- ctrlx-baseline: test page for framework/ui.js (used by ui_components_check.py; also a live example of every component) -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UI Components</title>
+  <link rel="stylesheet" href="../../www/framework/base.css">
+  <link rel="stylesheet" href="../../www/framework/ui.css">
+</head>
+<body>
+  <header>
+    <h1>UI components</h1>
+    <button id="commit" class="primary" title="Write the kept changes">Write <span id="badge" class="chip" hidden></span></button>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+  <div class="ui-layout">
+    <nav id="tree" aria-label="Pages"></nav>
+    <div class="ui-main">
+      <div class="ui-searchbar" id="searchbar"></div>
+      <div class="ui-pagebar">
+        <button id="back" class="ui-icon-btn" aria-label="Back"></button>
+        <h2 id="title">-</h2>
+        <button id="expand" title="Unfold every section">Expand all</button>
+        <button id="collapse" title="Fold every section">Collapse all</button>
+      </div>
+      <div id="page"></div>
+    </div>
+  </div>
+  <script src="../../www/framework/ctrlx.js"></script>
+  <script src="../../www/framework/ui.js"></script>
+  <script>
+    "use strict";
+    const T = window.T = { writes: [], params: [], drive: { mode: "LINEAR", speed: 100, on: true } };
+    const PARAMS = [];
+    for (let i = 1; i <= 150; i++) PARAMS.push({ idn: `S-0-${String(i).padStart(4, "0")}.0.0`, name: `Parameter ${i}`, value: i * 10, unit: "mm", min: 0, max: 5000, readonly: i === 2, locked: i === 3, lockHint: "Protected in operation mode" });
+    PARAMS[3].error = "not readable";
+    PARAMS[4].command = true; PARAMS[4].value = "0b0";
+    T.params = PARAMS;
+
+    $("back").appendChild(UI.icon("back"));
+    const card = UI.searchCard({ id: "search", placeholder: "Search", hint: "Search parameters and settings" });
+    $("searchbar").appendChild(card);
+    T.changes = UI.changes({ button: $("commit"), badge: $("badge"), onChange: () => { if (!T.tree) return; treeNodes(); if (T.nav && T.nav.current && T.nav.current.p === "changes") T.nav.replace(T.nav.current); } });
+
+    function treeNodes() {
+      T.tree.render([
+        { id: "changes", label: "Changes", count: T.changes.count, flags: T.changes.count ? [{ text: "edited", kind: "edited" }] : [] },
+        { id: "settings", label: "Settings", hint: "Settings as a table" },
+        { id: "drive", label: "Drive", select: false, children: [
+          { id: "params", label: "Parameters", count: PARAMS.length, dot: "ok" },
+          { id: "lazy", label: "Lazy folder", fill: async () => [{ id: "lazy-a", label: "Filled A" }, { id: "lazy-b", label: "Filled B", sub: "sub label" }] },
+        ] },
+      ]);
+    }
+    T.tree = UI.tree($("tree"), { nodes: [], storeKey: "test", onSelect: (n) => T.nav.go({ p: n.id }) });
+    treeNodes();
+
+    const PAGES = {
+      settings() {
+        return ["Settings", [UI.section("Drive", UI.settings([
+          ["Mode", UI.field(T.drive.mode, async (v) => { T.changes.add({ label: `Mode ${T.drive.mode} → ${v}`, group: "drive", undo: ((o) => async () => { T.drive.mode = o; })(T.drive.mode) }); T.drive.mode = v; }, { choices: ["LINEAR", "ROTARY"] }), "Axis type"],
+          ["Speed", UI.field(T.drive.speed, async (v) => { const n = Number(v); if (!Number.isFinite(n) || n < 0) throw new Error("a number ≥ 0 is expected"); T.changes.add({ label: `Speed ${T.drive.speed} → ${n}`, group: "drive", undo: ((o) => async () => { T.drive.speed = o; })(T.drive.speed) }); T.drive.speed = n; }), "mm/s"],
+          ["On", UI.field(T.drive.on, async (v) => { T.drive.on = v === "true"; }), "yes/no"],
+          ["Firmware", UI.field("FWA-1", null, { readonly: true }), "read-only"],
+        ]), { key: "t:drive", count: 4 }), UI.section("Other", "Some text", { key: "t:other" })]];
+      },
+      params() {
+        const el = UI.paramTable(PARAMS, {
+          id: "params", filter: "Show only parameters containing this text",
+          write: async (r, text) => {
+            const n = Number(text);
+            if (!Number.isFinite(n)) throw new Error("a number is expected");
+            if (n < r.min || n > r.max) throw new Error(`outside ${r.min} … ${r.max}`);
+            T.writes.push([r.idn, n]);
+            return { value: n };
+          },
+          run: async (r) => { T.ran = r.idn; },
+        });
+        T.paramEl = el;
+        return ["Parameters", [UI.section("Parameters", el, { key: "t:params", count: PARAMS.length })]];
+      },
+      changes() {
+        return ["Changes", [UI.section("Changes", T.changes.table(), { key: "t:changes", count: T.changes.count })]];
+      },
+      search(r) {
+        const t = r.q.toLowerCase();
+        const hits = PARAMS.filter((p) => p.name.toLowerCase().includes(t) || p.idn.toLowerCase().includes(t)).slice(0, 200);
+        return [`Search “${r.q}”: ${hits.length}`, [UI.section("Parameters", UI.table([
+          { label: "IDN", get: (p) => h("button", { class: "linkbtn", title: "Open", onclick: () => T.nav.go({ p: "params", focus: p.idn }) }, p.idn) },
+          { label: "Name", get: (p) => p.name },
+        ], hits, { key: (p) => p.idn }), { key: "t:search", count: hits.length })]];
+      },
+    };
+    const h = UI.h;
+    T.nav = UI.nav({ back: $("back"), title: $("title"), show: (r) => {
+      const [title, body] = (PAGES[r.p] || (() => [r.p, ["(empty)"]]))(r);
+      $("page").replaceChildren(...[].concat(body));
+      if (r.p !== "search") T.tree.select(r.p);
+      if (r.focus && T.paramEl) { const tr = T.paramEl.uiShowKey(r.focus); if (tr) { tr.scrollIntoView({ block: "center" }); UI.flash(tr, "found"); } }
+      return title;
+    } });
+    T.search = UI.search($("search"), { onQuery: (q) => T.nav.go({ p: "search", q }), onClear: () => T.nav.back() });
+    $("expand").onclick = () => UI.expandAll($("page"));
+    $("collapse").onclick = () => UI.collapseAll($("page"));
+    $("commit").onclick = () => { if (UI.confirmWrite(`${T.changes.count} changes are written to the drive.`, "The drive goes to parameter mode.")) { T.committed = T.changes.count; T.changes.clear(); } };
+    T.nav.go({ p: "settings" });
+  </script>
+</body>
+</html>

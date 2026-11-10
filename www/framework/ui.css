@@ -1,0 +1,90 @@
+/* SPDX-License-Identifier: MIT */
+/* ctrlx-baseline framework: style of the components in ui.js. Load after base.css and before the app's style.css.
+   Only the color tokens of base.css are used (an app's style.css may redefine them, e.g. for the ctrlX OS look). */
+
+.ui-icon { display: inline-flex; vertical-align: -4px; }
+button .ui-icon { margin-right: 6px; }
+.ui-icon-btn .ui-icon { margin: 0; }
+
+/* layout: side panel tree | page */
+.ui-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); align-items: start; min-height: calc(100vh - 57px); }
+.ui-tree { position: sticky; top: 0; height: 100vh; max-height: 100vh; overflow: auto; background: var(--card); border-right: 1px solid var(--line); padding: 6px 0 24px; font-size: 14px; }
+.ui-tree ul { list-style: none; margin: 0; padding: 0; }
+.ui-node { display: flex; align-items: center; gap: 6px; min-height: 30px; padding-right: 10px; cursor: pointer; white-space: nowrap; }
+.ui-node:hover { background: var(--hover); }
+.ui-node.ui-sel { background: var(--info-bg, #d1e4ff); }
+.ui-twisty { width: 14px; flex: none; color: var(--muted); font-size: 10px; text-align: center; }
+.ui-label { overflow: hidden; text-overflow: ellipsis; }
+.ui-sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.ui-count { margin-left: auto; color: var(--muted); font-size: 12px; padding-left: 6px; }
+.ui-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--muted); }
+.ui-dot-ok { background: var(--ok); }
+.ui-dot-warn { background: var(--warn); }
+.ui-dot-err { background: var(--err); }
+.ui-flag { font-size: 12px; padding: 0 6px; background: var(--hover); color: var(--text); }
+.ui-flag-edited, .ui-flag-warn { background: var(--warn-bg); }
+.ui-flag-err { background: var(--err-bg); }
+
+/* page bar: back, title, page buttons */
+.ui-main { min-width: 0; padding: 0 24px 40px; }
+.ui-pagebar { display: flex; align-items: center; gap: 10px; padding: 6px 0 12px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+.ui-pagebar h2 { margin: 0; font-size: 18px; font-weight: 400; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-icon-btn { width: 34px; padding: 0; display: inline-flex; align-items: center; justify-content: center; background: none; border-color: transparent; }
+.ui-icon-btn:hover:not(:disabled) { border-color: var(--line); }
+
+/* search */
+.ui-searchbar { position: sticky; top: 0; z-index: 4; background: var(--bg); padding: 12px 0 8px; }
+.ui-search { display: flex; align-items: center; gap: 8px; padding: 0 10px; min-height: 42px; background: var(--card); border: 1px solid var(--line); border-bottom-color: var(--text); color: var(--muted); }
+.ui-search:focus-within { border-bottom: 2px solid var(--accent); }
+.ui-search input { flex: 1; min-width: 0; height: 38px; border: 0; padding: 0; background: transparent; font-size: 15px; outline: none; }
+.ui-search-small { min-height: 34px; max-width: 360px; }
+.ui-search-small input { height: 30px; font-size: 14px; }
+.ui-filter { margin: 0 0 10px; }
+
+/* folding sections */
+details.ui-sec { background: var(--card); border: 1px solid var(--line); margin: 0 0 14px; }
+details.ui-sec > summary { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; list-style: none; font-size: 15px; user-select: none; }
+details.ui-sec > summary::-webkit-details-marker { display: none; }
+details.ui-sec > summary::before { content: "▸"; color: var(--muted); font-size: 13px; width: 12px; }
+details.ui-sec[open] > summary::before { content: "▾"; }
+details.ui-sec[open] > summary { border-bottom: 1px solid var(--line); }
+details.ui-sec > summary:hover { background: var(--hover); }
+details.ui-sec > summary .ui-count { margin-left: 0; font-size: 13px; }
+.ui-sec-btns { margin-left: auto; display: flex; gap: 8px; }
+.ui-sec-body { padding: 10px 14px 14px; }
+
+/* tables */
+.ui-scroll { overflow-x: auto; }
+.ui-table td, .ui-table th { vertical-align: middle; }
+.ui-table th.ui-num, .ui-table td.ui-num { text-align: right; font-variant-numeric: tabular-nums; }
+.ui-table tr.ui-empty td { color: var(--muted); }
+.ui-settings td.ui-setting { width: 30%; }
+.ui-settings td.ui-value { width: 35%; }
+.ui-settings td.ui-note { color: var(--muted); }
+.ui-mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; }
+.ui-wrap { white-space: normal; overflow-wrap: anywhere; }
+.ui-params td.ui-value { min-width: 160px; }
+.ui-lockcol { width: 28px; color: var(--muted); }
+.ui-err-text { color: var(--err); }
+.ui-pager { display: flex; align-items: center; gap: 10px; padding: 8px 0 0; color: var(--muted); }
+.ui-pager .ui-btn { width: 36px; padding: 0; }
+
+/* edit field: yellow = changed, not kept yet; red = refused (the reason is in the hint); green flash = kept */
+.ui-edit { width: 100%; min-width: 90px; max-width: 420px; height: 30px; padding: 0 6px; border: 0; border-bottom: 1px dashed var(--line); border-radius: 0; background: transparent; }
+.ui-edit.ui-num { font-variant-numeric: tabular-nums; }
+.ui-edit:hover:not(:disabled) { background: var(--hover); }
+.ui-edit:focus { outline: none; background: var(--hover); border-bottom: 2px solid var(--accent); }
+.ui-edit.ui-dirty { background: var(--warn-bg); }
+.ui-edit.ui-bad { background: var(--err-bg); border-bottom: 2px solid var(--err); }
+.ui-ro { color: var(--text); }
+.ui-flash-ok, tr.ui-flash-ok td { animation: ui-kept 2s ease-out; }
+.ui-flash, tr.ui-flash td { animation: ui-found 2.5s ease-out; }
+@keyframes ui-kept { from { background: var(--ok-bg); } to { background: transparent; } }
+@keyframes ui-found { from { background: var(--warn-bg); } to { background: transparent; } }
+
+/* phone width */
+@media (max-width: 760px) {
+  .ui-layout { grid-template-columns: 1fr; }
+  .ui-tree { position: static; max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--line); }
+  .ui-main { padding: 0 12px 32px; }
+}
