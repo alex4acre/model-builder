@@ -159,6 +159,54 @@ class WebTest(unittest.TestCase):
         self.assertEqual(len(self.viewer.store["G"]["configuration"]["ConfiguredAxis"]), 3)
         self.assertTrue(self.call("GET", "/projects/G")[1]["extra"]["uploaded_at"])
 
+    def test_viewer_projects_open_cache_and_zone(self):
+        from app import demos
+        self.viewer.store["Demo Gantry"] = demos.gantry_demo()
+        self.viewer.store["Demo Delta"] = demos.delta_demo()
+        self.assertEqual(self.call("GET", "/viewer/projects")[1]["projects"], ["Demo Delta", "Demo Gantry"])
+        self.assertEqual(self.call("POST", "/viewer/projects/Nope/open", {})[0], 404)
+        self.assertEqual(self.call("POST", "/viewer/zone", {"kinematic": "Gantry"})[0], 409)          # nothing open yet
+        self.assertEqual(self.call("GET", "/viewer/cache/cube.stl")[0], 404)
+        status, r = self.call("POST", "/viewer/projects/Demo%20Gantry/open", {})
+        self.assertEqual(status, 200)
+        self.assertEqual((r["name"], len(r["axes"])), ("Demo Gantry", 5))
+        self.assertEqual(sorted(f["name"] for f in r["files"]), ["Demo Gantry.xml", "beam.stl", "cube.stl", "floor.stl"])
+        self.assertTrue(r["xml"].startswith("<?xml"))
+        self.assertEqual(sorted({w["code"] for w in r["warnings"]}), ["expression", "unbound"])
+        status, raw = self.raw("GET", API + "/viewer/cache/Beam.STL")                       # name in another case
+        self.assertEqual((status, raw), (200, fake.demo_stl()))
+        self.assertEqual(self.raw("GET", API + "/viewer/cache/..%2Fx.stl")[0], 404)
+        # zone check with the kinematic from MOTION (AxisX/Y/Z, as the demo binds them)
+        status, z = self.call("POST", "/viewer/zone", {"kinematic": "Gantry"})
+        self.assertEqual(status, 200)
+        self.assertTrue(z["checked"])
+        self.assertEqual(self.call("POST", "/viewer/zone", {"kinematic": "Scara"})[1]["checked"], False)
+        self.assertEqual(self.call("POST", "/viewer/zone", {"kinematic": "Nope"})[0], 404)
+        z2 = self.call("POST", "/viewer/zone", {"axes": [{"name": "AxisX"}, {"name": "AxisY"}, {"name": "AxisZ", "dir": "-"}]})[1]
+        self.assertTrue(z2["checked"])
+        # the next open replaces the cache (one project at a time)
+        self.assertEqual(self.call("POST", "/viewer/projects/Demo%20Delta/open", {})[0], 200)
+        self.assertEqual(self.raw("GET", API + "/viewer/cache/floor.stl")[0], 404)
+        self.assertEqual(self.raw("GET", API + "/viewer/cache/CUBE.stl")[0], 200)
+        # nothing was written to the viewer or to the app's own projects
+        self.assertEqual(self.viewer.log, [])
+        self.assertEqual(self.call("GET", "/projects")[1]["projects"], [])
+
+    def test_viewer_not_installed_for_the_list(self):
+        self.viewer.installed = False
+        status, r = self.call("GET", "/viewer/projects")
+        self.assertEqual(status, 503)
+        self.assertIn("not installed", r["error"])
+        self.assertEqual(self.call("POST", "/viewer/projects/X/open", {})[0], 503)
+
+    def test_viewer_project_that_cannot_be_shown(self):
+        self.viewer.store["Broken"] = {"files": {"b.xml": b"<machine_definition", "m.stl": b"x"}, "configuration": None}
+        status, r = self.call("POST", "/viewer/projects/Broken/open", {})
+        self.assertEqual(status, 422)
+        self.assertIn("cannot be shown", r["error"])
+        self.viewer.store["Empty"] = {"files": {"m.stl": b"x"}, "configuration": None}
+        self.assertEqual(self.call("POST", "/viewer/projects/Empty/open", {})[0], 422)
+
     def test_viewer_not_installed(self):
         self.make_gantry()
         self.viewer.installed = False

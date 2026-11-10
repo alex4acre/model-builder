@@ -28,7 +28,7 @@ SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def factories(rt, dl):
     """(token -> bus for motion/..., token -> 3D viewer client): the caller's token against the core's REST API."""
     if rt.fake:
-        fake_viewer = FakeViewer()
+        fake_viewer = FakeViewer(demos=True)
         return (lambda token: dl.bus), (lambda token: fake_viewer)
     url = "https://localhost" if rt.in_snap else rt.env("CTRLX", "https://localhost:8443")
     return (lambda token: RestBus(url, token)), (lambda token: RestViewer(url, token))
@@ -45,7 +45,7 @@ def main():
     import os.path as p
     store = ProjectStore(p.join(data_dir, "projects"), rt.common_dir("projects"))
     motion_factory, viewer_factory = factories(rt, dl)
-    core = Core(store, motion_factory, viewer_factory, log=rt.log)
+    core = Core(store, motion_factory, viewer_factory, log=rt.log, cache_root=rt.common_dir("viewer-cache"))
     if dl.provider is not None:
         from app.framework.provider import NodeRegistry
         from app.provider import register

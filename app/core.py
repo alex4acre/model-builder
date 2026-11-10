@@ -2,17 +2,25 @@
 
 """The app's logic: projects (storage), generated models, zone check and the upload to the 3D viewer."""
 
+import os
+import shutil
+import threading
 import time
 
-from app import motion, storage, xmlgen, zone
+from app import motion, storage, viewanalysis, viewcache, xmlgen, zone
+from app.framework.bus import BusError
 from app.framework.web import HttpError
 from app.viewer import ViewerNotInstalled
 
 
 class Core:
 
-    def __init__(self, store: storage.ProjectStore, motion_factory, viewer_factory, log=print):
+    def __init__(self, store: storage.ProjectStore, motion_factory, viewer_factory, log=print, cache_root: str = None):
         self.store = store
+        # one 3D viewer project at a time is kept (read-only view): $SNAP_COMMON/viewer-cache/<safe name>/
+        self.cache_root = cache_root or os.path.join(os.path.dirname(store.roots["common"].rstrip(os.sep)), "viewer-cache")
+        self.view = None                            # the opened viewer project (see viewcache.open_project)
+        self.view_lock = threading.Lock()
         self.motion_factory = motion_factory        # token -> bus (browse/read of motion/...)
         self.viewer_factory = viewer_factory        # token -> RestViewer / FakeViewer
         self.log = log
@@ -64,6 +72,51 @@ class Core:
         bound = len(gen["configuration"]["ConfiguredAxis"])
         return {"name": name, "replaced": exists, "files": len(gen["files"]), "bound_axes": bound,
                 "uploaded_at": p["extra"]["uploaded_at"]}
+
+    # --- read-only view of existing 3D viewer projects ---------------------------------------------
+
+    def viewer_projects(self, token: str) -> list:
+        return sorted(str(n) for n in self.viewer_factory(token).projects())
+
+    def viewer_open(self, name: str, token: str) -> dict:
+        viewer = self.viewer_factory(token)
+        if name not in [str(n) for n in viewer.projects()]:
+            raise HttpError(404, f"The 3D viewer has no project named {name!r}")
+        with self.view_lock:
+            self.view = None
+            try:
+                v = viewcache.open_project(viewer, name, self.cache_root)
+            except (viewcache.ExtractError, ValueError) as e:
+                shutil.rmtree(self.cache_root, ignore_errors=True)
+                raise HttpError(422, f"The project {name!r} cannot be shown: {e}", "VIEW_FAILED") from None
+            self.view = v
+        self.log(f"3D viewer project {name!r} opened read-only: {len(v['files'])} files")
+        return {k: v[k] for k in v if k != "dir"}
+
+    def viewer_file(self, file: str):
+        v = self.view
+        path = viewcache.find_file(v["dir"], file) if v else None
+        if not path:
+            raise HttpError(404, f"{file!r} is not in the opened viewer project")
+        return path
+
+    def viewer_zone(self, d: dict, token: str) -> dict:
+        v = self.view
+        if not v:
+            raise HttpError(409, "No 3D viewer project is open", "NO_VIEW")
+        if d.get("kinematic"):
+            try:
+                k = motion.kinematic_config(self.motion_factory(token), str(d["kinematic"]))
+            except BusError as e:
+                raise HttpError(404, f"The kinematic {d['kinematic']!r} cannot be read: {e}") from None
+            axes = [(a["name"], -1.0 if a["dir"] == "-" else 1.0) for a in sorted(k["axes"], key=lambda a: a["index"])]
+            kin_type = k["type"]
+        else:
+            axes = [(str(a["name"]), -1.0 if a.get("dir") == "-" else 1.0) for a in d.get("axes") or [] if isinstance(a, dict) and a.get("name")]
+            kin_type = d.get("type") or {3: "Cartesian_XYZ", 2: "Cartesian_XY"}.get(len(axes), "")
+            if not axes:
+                raise HttpError(400, '{"kinematic": <name>} or {"axes": [{"name", "dir"}]} is needed')
+        return viewanalysis.zone_check(v["xml"], v["configuration"], kin_type, axes)
 
     # --- state ------------------------------------------------------------------------------------
 

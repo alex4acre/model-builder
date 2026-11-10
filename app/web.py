@@ -46,6 +46,10 @@ class RequestHandler(ApiHandler):
         ("POST", r"/projects/([^/]+)/zone-fix", "zone_fix"),
         ("POST", r"/projects/([^/]+)/from-kinematic", "from_kinematic"),
         ("POST", r"/projects/([^/]+)/upload-to-viewer", "upload_to_viewer"),
+        ("GET", r"/viewer/projects", "viewer_projects"),
+        ("POST", r"/viewer/projects/([^/]+)/open", "viewer_open"),
+        ("GET", r"/viewer/cache/([^/]+)", "viewer_cache"),
+        ("POST", r"/viewer/zone", "viewer_zone"),
         ("GET", r"/motion/axes", "motion_axes"),
         ("GET", r"/motion/kinematics", "motion_kinematics"),
     ]
@@ -161,6 +165,23 @@ class RequestHandler(ApiHandler):
         replace = _flag(self.q("replace", "0"))
         self.read_body()                       # an empty or {} body
         self.send_json(200, core.upload(name, self.token(), replace))
+
+    # --- 3D viewer projects, read-only ------------------------------------------------------------
+
+    def viewer_projects(self):
+        self.send_json(200, {"projects": core.viewer_projects(self.token())})
+
+    def viewer_open(self, name):
+        self.read_body()
+        self.send_json(200, core.viewer_open(name, self.token()))
+
+    def viewer_cache(self, file):
+        path = core.viewer_file(file)
+        with open(path, "rb") as f:
+            self.send_bytes(200, f.read(), "model/stl" if path.lower().endswith(".stl") else "application/octet-stream")
+
+    def viewer_zone(self):
+        self.send_json(200, core.viewer_zone(self.read_json(), self.token()))
 
     # --- MOTION -----------------------------------------------------------------------------------
 

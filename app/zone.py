@@ -46,10 +46,19 @@ def check(project: dict, xml: str = None, values: dict = None) -> dict:
         return {"checked": False, "ok": True, "rows": [],
                 "note": f"Not checked for this kinematic type ({kin.get('type') or 'unknown'})."}
     xml = xml if xml is not None else xmlgen.build_xml(project)
+    by_binding = {a["binding"]: a["name"] for a in xmlgen.axis_nodes(project) if a.get("binding")}
+    return check_model(xml, kin["type"], kin_axes(project), by_binding, values)
+
+
+def check_model(xml: str, kin_type: str, kin_axes_: list, by_binding: dict, values: dict = None) -> dict:
+    """The zone rule on a machine_definition XML. kin_axes_: [(MOTION axis name, direction sign)] in kinematic order;
+    by_binding: {MOTION axis name: model axis name}; values: {model axis name: value} (what the viewer applies)."""
+    if kin_type not in CARTESIAN:
+        return {"checked": False, "ok": True, "rows": [],
+                "note": f"Not checked for this kinematic type ({kin_type or 'unknown'})."}
     ev = xmleval.evaluate(xml, values)
-    count = CARTESIAN[kin["type"]]
-    by_binding = {a["binding"]: a for a in xmlgen.axis_nodes(project) if a.get("binding")}
-    wanted = kin_axes(project)[:count]
+    count = CARTESIAN[kin_type]
+    wanted = list(kin_axes_)[:count]
     rows = []
 
     def row(name, ok, value, note):
@@ -57,15 +66,16 @@ def check(project: dict, xml: str = None, values: dict = None) -> dict:
 
     nodes = []
     for axname, sign in wanted:
-        node = by_binding.get(axname)
-        if node is None:
+        model = by_binding.get(axname)
+        if model is None or model not in ev["axes"]:
             row(f"Axis {axname}", False, "not bound", "No model axis is bound to this kinematic axis.")
-        nodes.append((axname, sign, node))
+            model = None
+        nodes.append((axname, sign, model))
     if len(nodes) < count or any(n is None for _, _, n in nodes):
         row("Zone frame", False, "unknown", "Bind a model axis to each of the kinematic's first axes, then check again.")
         return {"checked": True, "ok": False, "rows": rows, "shift": None}
 
-    first = ev["axes"][nodes[0][2]["name"]]
+    first = ev["axes"][nodes[0][2]]
     origin = geom.origin(first["parent"])
     tool = xmleval.tool_point(ev)
     shift = None
@@ -80,7 +90,7 @@ def check(project: dict, xml: str = None, values: dict = None) -> dict:
             if dist > TOLERANCE else "The parent of the first axis sits at the tool point at the zero pose.")
     dirs = []
     for axname, sign, node in nodes:
-        e = ev["axes"][node["name"]]
+        e = ev["axes"][node]
         dirs.append([sign * c for c in geom.apply_dir(e["parent"], e["dir"])])
     unit_ok = all(abs(math.sqrt(sum(c * c for c in d)) - 1) < 1e-6 for d in dirs)
     ortho_ok = all(abs(sum(dirs[i][k] * dirs[j][k] for k in range(3))) < 1e-6
