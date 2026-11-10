@@ -1,81 +1,80 @@
 # SPDX-License-Identifier: MIT
 
-"""The app's state: the configuration (config.json in the app data of the active configuration) and a cyclic worker.
+"""The app's logic: projects (storage), generated models, zone check and the upload to the 3D viewer."""
 
-Replace the example (a counter and a setpoint) with the app's own logic. The file handling (atomic writes, files
-replaced from outside) is in app/framework/appdata.py.
-"""
-
-import os
-import threading
 import time
 
-from app.framework.appdata import JsonFile
-
-DEFAULTS = {"setpoint": 0.0, "cycle_s": 1.0, "note": ""}
-
-
-class ConfigError(ValueError):
-    pass
-
-
-def validate(cfg: dict) -> dict:
-    """The complete configuration from a (partial) one; ConfigError if a value is wrong."""
-    out = dict(DEFAULTS)
-    for key, value in cfg.items():
-        if key not in DEFAULTS:
-            raise ConfigError(f"unknown setting {key!r}")
-        out[key] = value
-    if isinstance(out["setpoint"], bool) or not isinstance(out["setpoint"], (int, float)):
-        raise ConfigError('"setpoint" must be a number')
-    out["setpoint"] = float(out["setpoint"])
-    if isinstance(out["cycle_s"], bool) or not isinstance(out["cycle_s"], (int, float)) or not 0.05 <= out["cycle_s"] <= 60:
-        raise ConfigError('"cycle_s" must be a number from 0.05 to 60')
-    if not isinstance(out["note"], str):
-        raise ConfigError('"note" must be text')
-    return out
+from app import motion, storage, xmlgen, zone
+from app.framework.web import HttpError
+from app.viewer import ViewerNotInstalled
 
 
 class Core:
 
-    def __init__(self, data_dir: str, bus, log=print):
-        self.bus = bus
+    def __init__(self, store: storage.ProjectStore, motion_factory, viewer_factory, log=print):
+        self.store = store
+        self.motion_factory = motion_factory        # token -> bus (browse/read of motion/...)
+        self.viewer_factory = viewer_factory        # token -> RestViewer / FakeViewer
         self.log = log
-        self.lock = threading.RLock()
-        self.settings = JsonFile(os.path.join(data_dir, "config.json"), validate, log)
-        self.counter = 0
         self.started = time.time()
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, name="worker", daemon=True)
 
-    @property
-    def config(self) -> dict:
-        return self.settings.data
+    # --- generated model --------------------------------------------------------------------------
 
-    # --- API used by web.py and provider.py -----------------------------------------------------------
+    def generate(self, name: str) -> dict:
+        p = self.store.get(name)
+        return xmlgen.generate(p, lambda f: self.store.read_mesh(name, f))
 
-    def update_config(self, changes: dict) -> dict:
-        return self.settings.update(changes)
+    def xml(self, name: str) -> str:
+        return xmlgen.build_xml(self.store.get(name))
 
-    def set_setpoint(self, value: float) -> float:
-        return self.update_config({"setpoint": value})["setpoint"]
+    def package(self, name: str) -> bytes:
+        return xmlgen.package_zip(self.generate(name))
+
+    # --- zone check -------------------------------------------------------------------------------
+
+    def zone_check(self, name: str) -> dict:
+        return zone.check(self.store.get(name))
+
+    def zone_fix(self, name: str) -> dict:
+        p = self.store.get(name)
+        fixed = zone.fix(p)
+        self.store.put(name, fixed)
+        return {"project": self.store.get(name), "check": zone.check(self.store.get(name))}
+
+    # --- MOTION -----------------------------------------------------------------------------------
+
+    def from_kinematic(self, name: str, kinematic: str, token: str) -> dict:
+        self.store.find(name)
+        return motion.tree_from_kinematic(self.motion_factory(token), kinematic)
+
+    # --- 3D viewer --------------------------------------------------------------------------------
+
+    def upload(self, name: str, token: str, replace: bool) -> dict:
+        gen = self.generate(name)
+        viewer = self.viewer_factory(token)
+        exists = name in viewer.projects()
+        if exists and not replace:
+            raise HttpError(409, f"The 3D viewer has a project named {name!r}. Uploading replaces its files, its axis "
+                                 "bindings and its library picture.", "EXISTS")
+        viewer.create(name, gen["files"])
+        viewer.configure(name, gen["configuration"])         # always: a (re-)upload clears the bindings
+        p = self.store.get(name)
+        p.setdefault("extra", {})["uploaded_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.store.put(name, p)
+        bound = len(gen["configuration"]["ConfiguredAxis"])
+        return {"name": name, "replaced": exists, "files": len(gen["files"]), "bound_axes": bound,
+                "uploaded_at": p["extra"]["uploaded_at"]}
+
+    # --- state ------------------------------------------------------------------------------------
 
     def state(self) -> dict:
-        with self.lock:
-            return {"counter": self.counter, "setpoint": self.config["setpoint"],
-                    "uptime_s": round(time.time() - self.started, 1), "connected": self.bus.is_connected()}
+        return {"projects": len(self.store.list()), "generation": self.store.generation,
+                "uptime_s": round(time.time() - self.started, 1)}
 
-    # --- worker ------------------------------------------------------------------------------------
+    def configuration_loaded(self):
+        self.store.refresh()
 
-    def start(self):
-        self._thread.start()
 
-    def _run(self):
-        while not self._stop.wait(self.config["cycle_s"]):
-            with self.lock:
-                self.counter += 1
-
-    def stop(self):
-        self._stop.set()
-        if self._thread.is_alive():
-            self._thread.join(5)
+def error_types():
+    from app.viewer import ViewerError
+    return ((storage.Conflict, 409), (ViewerNotInstalled, 503), (ViewerError, 502))
