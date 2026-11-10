@@ -110,7 +110,7 @@ so they survive a round trip unchanged.
   linear formula applied (`a*value+b`, never evaluated), warnings (formula not `value`, unbound axis, binding without axis,
   assignKin passive joint, missing STL, no tool, duplicate axis name), Cartesian zone check against a MOTION kinematic (result
   only, no Fix). Nothing is written or saved. Tested on Scara Sort, Delta_Ori_Sort and the L10409A_Gantry (original and baked).
-- **Later (0.3.x): editable import.** Importing a viewer project into a project of this app (XML to tree, including nested
+- **Editable import: done in 0.3.0 (2026-11-10).** Importing a viewer project into a project of this app (XML to tree, including nested
   named transforms, scripts to offset/invert, assignKin joints) with a round-trip test.
 - Pick pivots by clicking the mesh. Snap to vertex, edge midpoint or **circle centre** (a
   circle fitted to a hole or shaft edge loop). Take the direction from a face normal or the
@@ -228,9 +228,70 @@ renders itself on first open).
 Device test on the X3 at .22 by the user (build 2 axes, upload, jog); 0.2.0 view-only to be tried against real viewer projects
 (amd64 build for the X7), then the editable import.
 
-## 0.3.0 (decided 2026-11-10, user go: X3 arm64 + install on .22)
+## 0.3.0 (decided 2026-11-10, built arm64 2026-11-10, user go: X3 arm64 + install on .22)
 1. Clicking a node in the Structure/Tree box must not scroll it to the top (cause: `renderAll` rebuilds the panels; the column scroll is kept, the inner `.tree-box` scroll is not).
 2. Resizable left and right panels with `UI.splitter` from baseline proposal/ui-splitter (1.1.1, awaiting the reviewer; backup-explorer 0.4.1 precedent). `check.py` reports the framework ui.js/ui.css as "local change" until 1.1.1 is released.
 3. Editable import of 3D viewer projects (Phase 2 part B).
    - **D9** Formulas are kept as text and editable per axis (the user's choice). This replaces "ExpressionScript always value" from D7. Offset/invert stay available, and the zone check still warns on any formula that isn't `value`.
    - **D10** Upload back under the same viewer name after a confirmation (files replaced, bindings sent again, library picture redrawn). "Save as new name" is also offered.
+
+### 0.3.0 done (2026-11-10)
+1. **Scroll bug:** `renderAll()` now keeps the scroll position of both columns and of every scrolling element with an id inside
+   them (`scrollState` / `restoreScroll`, keyed by id: `tree-box`, `view-tree`, ...). UI check: scrolled Tree box and Structure
+   box, click a node, edit a property, `scrollTop` unchanged.
+2. **Resizable panels:** `www/framework/ui.js` and `ui.css` are the versions of `proposal/ui-splitter` (1.1.1, awaiting the
+   reviewer), so `check.py` reports exactly these two files as "local change" until 1.1.1 is released. `UI.splitter` only
+   handles a LEFT panel (it puts `--ui-side` on the layout and the handle after the panel): the left column uses it
+   (min 240, max 640, key `left`); the right handle is made in app.js with the same look/behaviour (`#split-right`, key
+   `model-builder.width.right`, min 300, max 800, drag, arrows, double-click = 500 px). A baseline follow-up for the reviewer:
+   an `opts.side: "right"` in `UI.splitter`. The grid is `left | 6px | centre | 6px | right`; the three.js renderer follows
+   through its ResizeObserver (checked: canvas width = stage width after dragging).
+3. **Editable import** (`app/xmlimport.py`, `Core.import_viewer`, `POST /viewer/projects/<name>/import`):
+   - A `<transform>` whose only child is one `<geometry>` becomes a part (or tool) with the transform's matrix and name
+     (`matrix`, `transform_name`); every other `<transform>` becomes a `frame` node {name, matrix, children}; a geometry
+     directly inside an element becomes a part/tool with `bare: true` (no wrapper). Axes keep pivot and direction as in the XML
+     (local frame, finding R1).
+   - Kept on the node and written back unchanged: `xattrs` (every attribute the editor does not model: `customdata`,
+     `channelId`, `rotationAxisRolloverEnabled`, `supports_spinning`, the tool's cut/arbor/holder colours, unknown ones),
+     `tattrs` (extra attributes of the transform around a geometry), `xml_extra` (unknown child elements and comments as XML
+     text), project level: `machine_data` (attributes incl. version, children such as `view_transform`), `machine_attrs`,
+     `xml_prolog` (comments before the root), root-level unknown elements. Imported nodes carry `src: true`: 12 significant
+     digits, original order, and no `Mounting` wrapper (`"root": "none"`).
+   - Nothing is dropped silently: the only things that cannot be kept are text inside elements and stray text outside the
+     root; the import then answers 409 `DROPS` with the list and the UI asks "Import anyway?". A transform without a valid
+     `initialvalue`, an axis with another type or direction (0,0,0), a duplicate axis name or a formula that is empty/multi-line
+     refuse the import with the reason (422).
+   - STLs are matched to the `geo` names case-insensitively and stored under the zip's real file names; the XML then names the
+     real file (`beam.stl`, was `Beam.STL`). A mesh named in the XML but not in the zip stays a reference (listed in the import
+     report); the upload leaves it out and says so.
+   - Bindings: `formula` = the ExpressionScript (default `value`), `binding_extra` = other keys of the entry,
+     `orphan_bindings` = entries that match no axis, `configuration_extra` = the rest of the viewer's configuration (not the
+     TrackId, which the viewer assigns anew). The import downloads into a temporary folder, so the read-only view's cache is not
+     touched.
+   - **D9 formulas:** every axis has a Formula field (default `value`, validated: not empty, one line, at most 200 characters),
+     written unchanged as ExpressionScript. The preview applies it when the linear parser (Python `app/formula.py`, port in
+     app.js) understands it (`value`, `k - value`, `value + k`, `k * value`, `value / k`, ...; NOT two operations such as
+     `2250 - value + 10`) and otherwise says "formula not applied". The zone check gets a "Formulas" row (warning) when a bound
+     kinematic axis has a formula other than `value`, and evaluates the model with the formulas applied at MOTION 0.
+   - **D10 upload back:** the upload goes to `viewer_name` (default: the project name). If it exists the confirmation is
+     "Replaces <name> in the 3D viewer: its files are replaced, the axis bindings are sent again and the library picture is
+     redrawn." "Upload as new name..." asks for a name, checks the viewer list in the dialog and again on the server (409
+     `NAME_TAKEN`), uploads and stores it as `viewer_name`. The configuration is always PUT after the POST.
+   - **Zone fix on a frame:** the fix shift is the world shift turned back by the parent's linear part (`geom.inv3_apply`), so
+     an `MCS_Origin` is right even when the first axis sits in a rotated frame (an axis inside `T(m) * ... * T(-m)` equals the
+     original for any local `m`).
+   - **Round trip** (`tests/test_import.py`, the key test): Scara Sort, Delta_Ori_Sort, L10409A_Gantry original and Model_baked
+     (shared folder, skipped if missing) and the two fake demos: the regenerated XML has the same element/name structure
+     (no wrapper), every attribute of every element equal (numbers to 1e-9 relative, `geo` in any case), the same
+     `ConfiguredAxis` entries and configuration extras, and the same world matrices for every geometry, tool and axis
+     (parent, world, direction, pivot) for 20 random poses within 0.01 mm / 1e-6 (the numbers are in fact equal to about
+     1e-9). Editing a formula and moving a frame changes exactly that frame's `initialvalue` and that one ExpressionScript.
+4. New facts: the Scara file has two transforms both named `ToolTransform` and geometries directly inside axes; the Delta file
+   has comments (also before the root), `supports_spinning` on axes and passive `assignKin` joints without a binding; the
+   Gantry files have `machine_data version="1.9"` with a `view_transform` child and a slightly non-orthonormal rotation
+   (0.9999999) that must not be "cleaned up". The editor's own projects are unchanged: 0.1.0-style XML is byte-identical
+   (existing test kept).
+
+Not kept / open: text content inside XML elements (none of the examples has any); `rotationAxisRolloverEnabled` and other axis
+attributes are kept but not editable; an imported axis' offset/invert start at 0/off (the original offsets live in the file's
+own `_Offset` frames, which are now ordinary frames); the XML declaration is not written (the viewer does not need it).
