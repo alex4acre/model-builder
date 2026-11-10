@@ -227,3 +227,10 @@ renders itself on first open).
 ## Next step
 Device test on the X3 at .22 by the user (build 2 axes, upload, jog); 0.2.0 view-only to be tried against real viewer projects
 (amd64 build for the X7), then the editable import.
+
+## 0.3.0 (decided 2026-11-10, user go: X3 arm64 + install on .22)
+1. Clicking a node in the Structure/Tree box must not scroll it to the top (cause: `renderAll` rebuilds the panels; the column scroll is kept, the inner `.tree-box` scroll is not).
+2. Resizable left and right panels with `UI.splitter` from baseline proposal/ui-splitter (1.1.1, awaiting the reviewer; backup-explorer 0.4.1 precedent). `check.py` reports the framework ui.js/ui.css as "local change" until 1.1.1 is released.
+3. Editable import of 3D viewer projects (Phase 2 part B).
+   - **D9** Formulas are kept as text and editable per axis (the user's choice). This replaces "ExpressionScript always value" from D7. Offset/invert stay available, and the zone check still warns on any formula that isn't `value`.
+   - **D10** Upload back under the same viewer name after a confirmation (files replaced, bindings sent again, library picture redrawn). "Save as new name" is also offered.
