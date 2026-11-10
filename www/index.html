@@ -7,44 +7,39 @@
   <link rel="stylesheet" href="framework/base.css">
   <link rel="stylesheet" href="framework/ui.css">
   <link rel="stylesheet" href="style.css">
+  <script>
+    // collected for tests/ui/ui_check.py: script errors and console.error calls
+    window.__errors = [];
+    window.addEventListener("error", (e) => window.__errors.push(String(e.message)));
+    window.addEventListener("unhandledrejection", (e) => window.__errors.push("unhandled: " + String(e.reason && e.reason.message || e.reason)));
+    const __ce = console.error;
+    console.error = (...a) => { window.__errors.push(a.map(String).join(" ")); __ce.apply(console, a); };
+  </script>
+  <script type="importmap">
+  { "imports": { "three": "./vendor/three/three.module.js", "three/addons/": "./vendor/three/jsm/" } }
+  </script>
 </head>
 <body>
   <header>
-    <h1>3D Model Builder</h1>
-    <span id="conn" class="chip">...</span>
+    <h1 title="Build 3D viewer models from STL files and bind them to ctrlX MOTION axes">3D Model Builder</h1>
+    <span id="project-chip" class="chip" title="The project that is open">No project open</span>
+    <span id="save-chip" class="chip" title="Changes are saved as soon as they are made">-</span>
+    <span id="zone-chip" class="chip" title="Result of the zone check for a Cartesian kinematic">Zone: -</span>
+    <span id="toolbar" class="btn-group"></span>
   </header>
   <div id="banner" class="banner" hidden></div>
 
-  <main>
-    <section class="card">
-      <h2>State</h2>
-      <dl class="grid">
-        <dt>Counter</dt><dd id="counter">-</dd>
-        <dt>Uptime</dt><dd id="uptime">-</dd>
-      </dl>
+  <main class="mb">
+    <aside id="left" class="col"></aside>
+    <section id="centre" class="col centre">
+      <div id="stage" class="stage" title="3D preview: drag to orbit, right-drag or Shift-drag to pan, wheel to zoom"></div>
+      <div id="stage-bar" class="stage-bar"></div>
     </section>
-
-    <section class="card">
-      <h2>Setpoint</h2>
-      <p class="hint">Also writable as the Data Layer node <code>model-builder/setpoint</code>.</p>
-      <div id="settings"></div>
-    </section>
-
-    <section class="card">
-      <h2>Data Layer node</h2>
-      <div class="row">
-        <input id="path" type="text" placeholder="e.g. framework/metrics/system/cpu-utilisation-percent">
-        <button id="read">Read</button>
-      </div>
-      <div class="row">
-        <input id="value" type="text" placeholder="value as JSON, e.g. true, 1.5, &quot;text&quot;, [1,2]">
-        <button id="write">Write</button>
-      </div>
-      <pre id="result"></pre>
-    </section>
+    <aside id="right" class="col"></aside>
   </main>
+  <input id="file-input" type="file" accept=".stl,.STL" hidden title="Choose an STL file to upload">
   <script src="framework/ctrlx.js"></script>
   <script src="framework/ui.js"></script>
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>
