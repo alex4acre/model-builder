@@ -9,6 +9,7 @@
 //   UI.settings(rows)                  Setting | Value | Note  UI.paramTable(rows, opts)       parameter table
 //   UI.section(title, body, opts)      folding box             UI.expandAll(root) / UI.collapseAll(root)
 //   UI.tree(host, opts)                side panel tree         UI.nav(opts)                    back button + page title
+//   UI.splitter(panel, opts)           drag handle: the side panel's width (remembered)
 //   UI.search(input, opts)             search box              UI.searchCard(opts)             the search box element
 //   UI.changes(opts)                   changes kept before a commit (list, undo, count badge)
 //   UI.confirmWrite(what, consequence) the one question before something changes a device
@@ -330,6 +331,51 @@ const UI = (() => {
     };
   }
 
+  // ---------- side panel width ----------
+  // splitter(panel, {storeKey, min, max}): a handle right of the side panel (inside .ui-layout). Drag it, or use the
+  // arrow keys on it, to make the panel wider or narrower; double-click (or Home) goes back to the standard width.
+  // The width is remembered per browser. The standard width is --ui-side-default (300px, an app may set its own).
+  function splitter(panel, opts = {}) {
+    const layout = panel.parentElement;
+    const key = "width." + (opts.storeKey || "main");
+    const min = opts.min || 180, max = opts.max || 720;
+    const hd = h("div", { class: "ui-splitter", role: "separator", "aria-orientation": "vertical", tabindex: "0",
+      title: "Drag to make the panel wider or narrower (or the arrow keys); double-click: standard width" });
+    const clamp = (w) => Math.round(Math.max(min, Math.min(max, window.innerWidth - 320, w)));
+    const width = () => panel.getBoundingClientRect().width;
+    function set(w, keep) {
+      if (w === null) layout.style.removeProperty("--ui-side");
+      else layout.style.setProperty("--ui-side", clamp(w) + "px");
+      hd.setAttribute("aria-valuenow", String(Math.round(width())));
+      if (keep) store.set(key, w === null ? null : clamp(w));
+    }
+    layout.classList.add("ui-has-splitter");
+    panel.after(hd);
+    const saved = store.get(key, null);
+    if (typeof saved === "number") set(saved);
+    hd.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      try { hd.setPointerCapture(ev.pointerId); } catch (e) { /* a synthetic event (tests) has no pointer to capture */ }
+      const left = panel.getBoundingClientRect().left;
+      layout.classList.add("ui-resizing");
+      const move = (e) => set(e.clientX - left);
+      const up = () => {
+        hd.removeEventListener("pointermove", move);
+        hd.removeEventListener("pointerup", up);
+        layout.classList.remove("ui-resizing");
+        set(width(), true);
+      };
+      hd.addEventListener("pointermove", move);
+      hd.addEventListener("pointerup", up);
+    });
+    hd.addEventListener("keydown", (ev) => {
+      if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") { ev.preventDefault(); set(width() + (ev.key === "ArrowLeft" ? -16 : 16), true); }
+      if (ev.key === "Home") { ev.preventDefault(); set(null, true); }
+    });
+    hd.addEventListener("dblclick", () => set(null, true));
+    return { set: (w) => set(w, true), reset: () => set(null, true), get width() { return width(); } };
+  }
+
   // ---------- back button + page title ----------
   // nav({back: button, title: element, show(route) -> title (may be async)}); routes are plain objects
   function nav(opts) {
@@ -432,7 +478,7 @@ const UI = (() => {
   const confirmWrite = (what, consequence) => confirm(`${what}\n\n${consequence ? consequence + "\n\n" : ""}Write it now?`);
 
   return {
-    h, icon, field, flash, busy, table, settings, paramTable, section, tree, nav, search, searchCard, changes, confirmWrite,
+    h, icon, field, flash, busy, table, settings, paramTable, section, tree, splitter, nav, search, searchCard, changes, confirmWrite,
     expandAll: (root) => foldAll(root, true), collapseAll: (root) => foldAll(root, false),
     get kept() { return kept; }, set kept(k) { kept = k; },
   };

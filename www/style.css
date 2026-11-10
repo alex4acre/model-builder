@@ -7,13 +7,16 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 header { flex: none; padding: 8px 16px; gap: 10px; flex-wrap: wrap; }
 h1 { flex: none; margin-right: 6px; font-weight: 400; }
 .btn-group { margin-left: auto; display: inline-flex; gap: 6px; flex-wrap: wrap; }
-.btn-group button, .wide-btn { width: 176px; display: inline-flex; align-items: center; justify-content: center; }
+.btn-group button, .wide-btn { width: 196px; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; }
 .banner { flex: none; margin: 8px 16px 0; }
 .readonly-bar { flex: none; margin: 8px 16px 0; padding: 6px 10px; display: flex; align-items: center; gap: 10px; background: var(--info-bg, #d1e4ff); border: 1px solid var(--accent); border-left-width: 4px; }
 .readonly-bar[hidden] { display: none; }
 .readonly-bar .grow { flex: 1; }
 
-main.mb { flex: 1; min-height: 0; display: grid; grid-template-columns: 360px minmax(320px, 1fr) 500px; gap: 0; padding: 0; }
+main.mb { --ui-side-default: 360px; --mb-right: 500px; flex: 1; min-height: 0; display: grid; grid-template-columns: 360px minmax(320px, 1fr) 500px; gap: 0; padding: 0; }
+/* three columns with a drag handle each: UI.splitter (left, framework) and the right one made in app.js, same look */
+main.mb.ui-layout, main.mb.ui-layout.ui-has-splitter { align-items: stretch; min-height: 0; grid-template-columns: var(--ui-side, var(--ui-side-default)) 6px minmax(240px, 1fr) 6px var(--mb-right); }
+main.mb .ui-splitter { position: relative; top: 0; height: 100%; }
 .col { min-height: 0; overflow: auto; padding: 10px 12px; background: var(--bg); }
 .col.centre { padding: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
 .stage { flex: 1; min-height: 200px; position: relative; }
@@ -37,6 +40,7 @@ table td, table th { padding: 3px 6px; }
 .ui-settings td.ui-value { width: 32%; }
 .ui-settings td.ui-note { font-size: 12px; }
 .ui-edit { max-width: none; }
+.ui-settings td.ui-value .ui-ro { display: block; white-space: normal; overflow-wrap: anywhere; }
 select.ui-edit { border: 0; border-bottom: 1px dashed var(--line); background: transparent; height: 30px; }
 input[type="color"] { width: 48px; height: 26px; padding: 0; border: 1px solid var(--line); }
 
@@ -90,7 +94,8 @@ dialog input[type="text"] { width: 100%; }
 
 @media (max-width: 1100px) {
   body { overflow: auto; }
-  main.mb { grid-template-columns: 1fr; }
+  main.mb, main.mb.ui-layout, main.mb.ui-layout.ui-has-splitter { grid-template-columns: 1fr; }
+  main.mb .ui-splitter { display: none; }
   .col { overflow: visible; }
   .stage { min-height: 360px; }
 }

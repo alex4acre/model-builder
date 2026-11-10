@@ -1,6 +1,6 @@
 name: model-builder
 title: 3D Model Builder
-version: 0.2.0
+version: 0.3.0
 summary: Build 3D viewer models from STL files and bind them to ctrlX MOTION axes
 description: |
   Build 3D viewer models from STL files and bind them to ctrlX MOTION axes

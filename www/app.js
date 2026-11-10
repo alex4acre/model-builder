@@ -35,6 +35,7 @@ const PATHS = {
   refresh: "M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z",
   close: "M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z",
   frame: "M3 21V3h2v16h16v2H3zm5-6V8l5 3.5L8 15zm6-2 5-3.5V17l-5-4z",
+  import: "M19 12v7H5v-7H3v7a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2zm-6 .67 2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2v9.67z",
   reset: "M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62A7.95 7.95 0 0 1 12.5 10c3.54 0 6.55 2.31 7.6 5.5l2.37-.78A10.02 10.02 0 0 0 12.5 8z",
 };
 function ico(name) {
@@ -78,14 +79,15 @@ function toVec(text, n = 3) {
 }
 const uid = () => "n" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
+const hasKids = (n) => n.kind === "axis" || n.kind === "frame";       // nodes that carry children
 function* walk(nodes, parent = null) {
-  for (const n of nodes || []) { yield [n, parent]; if (n.kind === "axis") yield* walk(n.children, n); }
+  for (const n of nodes || []) { yield [n, parent]; if (hasKids(n)) yield* walk(n.children, n); }
 }
 function locate(tree, id) {
   const find = (list, parent) => {
     for (let i = 0; i < list.length; i++) {
       if (list[i].id === id) return { node: list[i], list, index: i, parent };
-      if (list[i].kind === "axis") { const r = find(list[i].children || [], list[i]); if (r) return r; }
+      if (hasKids(list[i])) { const r = find(list[i].children || [], list[i]); if (r) return r; }
     }
     return null;
   };
@@ -126,7 +128,7 @@ async function refreshModel() {
     S.modelError = "";
     preview.setXml(xml).catch((e) => { S.modelError = e.message; banner(e.message); });
     syncPreview();
-    preview.setValues(S.values);
+    preview.setValues(modelValues());
   } catch (e) {
     S.zone = null;
     S.modelError = e.message;
@@ -305,7 +307,7 @@ async function deleteMesh(mid) {
 // ---------------------------------------------------------------- tree operations
 function insertionTarget(draft) {
   const sel = S.selection && S.selection.kind === "node" ? locate(draft.tree, S.selection.id) : null;
-  if (sel && sel.node.kind === "axis") return sel.node.children;
+  if (sel && hasKids(sel.node)) return sel.node.children;
   if (sel && sel.parent) return sel.parent.children;
   return draft.tree;
 }
@@ -324,10 +326,14 @@ async function addNode(make) {
   });
 }
 const addAxis = (type) => addNode((d) => ({
-  kind: "axis", name: uniqueName(d, type === "rotation" ? "Rot" : "Lin"), type, direction: type === "rotation" ? [0, 0, 1] : [1, 0, 0],
+  kind: "axis", name: uniqueName(d, type === "rotation" ? "Rot" : "Lin"), type, formula: "value", direction: type === "rotation" ? [0, 0, 1] : [1, 0, 0],
   pivot: [0, 0, 0], range: type === "rotation" ? [-360, 360] : [-1000, 1000], initial: 0, offset: 0, invert: false, binding: "", children: [] }));
 function addTool() {
   return addNode((d) => ({ kind: "tool", name: uniqueName(d, "Tool"), position: [0, 0, 0] }));
+}
+const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+function addFrame() {
+  return addNode((d) => ({ kind: "frame", name: uniqueName(d, "Frame"), matrix: IDENTITY.slice(), children: [] }));
 }
 function addPart() {
   const ids = Object.keys(S.project.meshes);
@@ -342,7 +348,7 @@ function addPartOf(mid) {
 async function deleteNode() {
   const n = currentNode();
   if (!n) { banner("Select a node in the tree first"); return; }
-  const kids = n.kind === "axis" ? [...walk(n.children)].length : 0;
+  const kids = hasKids(n) ? [...walk(n.children)].length : 0;
   if (kids && !confirm(`Delete ${n.name} and the ${kids} nodes under it?`)) return;
   await guard(async () => { await mutate((d) => { const r = locate(d.tree, n.id); r.list.splice(r.index, 1); }); S.selection = null; renderAll(); syncPreview(); });
 }
@@ -356,8 +362,8 @@ async function moveNode(how) {
       if (how === "up" && index > 0) [list[index - 1], list[index]] = [list[index], list[index - 1]];
       else if (how === "down" && index < list.length - 1) [list[index + 1], list[index]] = [list[index], list[index + 1]];
       else if (how === "into") {
-        const above = [...list.slice(0, index)].reverse().find((x) => x.kind === "axis");
-        if (!above) throw new Error("There is no axis above this node to move it into");
+        const above = [...list.slice(0, index)].reverse().find(hasKids);
+        if (!above) throw new Error("There is no axis or frame above this node to move it into");
         list.splice(index, 1);
         above.children.push(r.node);
       } else if (how === "out") {
@@ -378,7 +384,7 @@ async function dropNode(dragId, targetId, mode) {
       src.list.splice(src.index, 1);
       if (!targetId) { d.tree.push(src.node); return; }
       const t = locate(d.tree, targetId);
-      if (mode === "into" && t.node.kind === "axis") t.node.children.push(src.node);
+      if (mode === "into" && hasKids(t.node)) t.node.children.push(src.node);
       else t.list.splice(t.list.indexOf(t.node), 0, src.node);
     });
   });
@@ -454,21 +460,21 @@ function treeCard() {
   const kinSel = h("select", { id: "kin-select", title: "A kinematic from ctrlX MOTION: one axis per kinematic axis, bound to it" },
     h("option", { value: "" }, S.kins.length ? "Pick a kinematic ..." : (S.motionError || "No kinematics found")),
     S.kins.map((k) => h("option", { value: k.name, selected: p.kinematic && p.kinematic.name === k.name }, `${k.name} (${k.type || "?"})`)));
-  const box = h("div", { class: "tree-box", id: "tree-box", title: "The model tree: an axis carries everything under it. Drag a node onto an axis to move it there." });
+  const box = h("div", { class: "tree-box", id: "tree-box", title: "The model tree: an axis or frame carries everything under it. Drag a node onto an axis or frame to move it there." });
   const draw = (nodes) => h("ul", {}, nodes.map((n) => {
     const sel = S.selection && S.selection.kind === "node" && S.selection.id === n.id;
-    const sub = n.kind === "axis" ? (n.binding || "not bound") : n.kind === "part" ? (p.meshes[n.mesh] ? p.meshes[n.mesh].file : "missing mesh") : "TCP";
-    const hint = n.kind === "axis" ? `${n.type} axis ${n.name}, bound to ${n.binding || "no MOTION axis"}` : n.kind === "part" ? `Part ${n.name} (mesh ${sub})` : `Tool marker ${n.name}`;
+    const sub = n.kind === "axis" ? (isPassive(n) ? "passive" : n.binding || "not bound") : n.kind === "part" ? (p.meshes[n.mesh] ? p.meshes[n.mesh].file : "missing mesh") : n.kind === "frame" ? "frame" : "TCP";
+    const hint = n.kind === "axis" ? `${n.type} axis ${n.name}, bound to ${n.binding || "no MOTION axis"}` : n.kind === "part" ? `Part ${n.name} (mesh ${sub})` : n.kind === "frame" ? `Frame ${n.name}: a transform that places everything under it` : `Tool marker ${n.name}`;
     const row = h("div", { class: "ui-node" + (sel ? " ui-sel" : ""), "data-id": n.id, title: hint, draggable: "true", style: "padding-left:8px" },
       h("span", { class: "kind", title: n.kind }, ico(n.kind === "axis" ? n.type : n.kind)),
       h("span", { class: "ui-label" }, n.name), h("span", { class: "ui-sub" }, sub));
     row.addEventListener("click", () => { S.selection = { kind: "node", id: n.id }; renderAll(); syncPreview(); });
     row.addEventListener("dragstart", (ev) => { ev.dataTransfer.setData("text/plain", n.id); ev.dataTransfer.effectAllowed = "move"; });
-    row.addEventListener("dragover", (ev) => { ev.preventDefault(); const into = n.kind === "axis"; row.classList.toggle("drop-into", into); row.classList.toggle("drop-before", !into); });
+    row.addEventListener("dragover", (ev) => { ev.preventDefault(); const into = hasKids(n); row.classList.toggle("drop-into", into); row.classList.toggle("drop-before", !into); });
     row.addEventListener("dragleave", () => row.classList.remove("drop-into", "drop-before"));
-    row.addEventListener("drop", (ev) => { ev.preventDefault(); ev.stopPropagation(); row.classList.remove("drop-into", "drop-before"); const id = ev.dataTransfer.getData("text/plain"); if (id && id !== n.id) dropNode(id, n.id, n.kind === "axis" ? "into" : "before"); });
+    row.addEventListener("drop", (ev) => { ev.preventDefault(); ev.stopPropagation(); row.classList.remove("drop-into", "drop-before"); const id = ev.dataTransfer.getData("text/plain"); if (id && id !== n.id) dropNode(id, n.id, hasKids(n) ? "into" : "before"); });
     const li = h("li", {}, row);
-    if (n.kind === "axis" && n.children && n.children.length) {
+    if (hasKids(n) && n.children && n.children.length) {
       const ul = draw(n.children);
       ul.style.paddingLeft = "16px";
       li.appendChild(ul);
@@ -484,15 +490,16 @@ function treeCard() {
   return h("section", { class: "card", id: "tree-card" },
     h("h2", {}, "Tree"),
     h("div", { class: "tools", id: "tree-tools" },
-      tool("rotation", "Add a rotation axis (under the selected axis, else at the top level)", () => addAxis("rotation"), { id: "add-rot" }),
-      tool("translation", "Add a translation axis (under the selected axis, else at the top level)", () => addAxis("translation"), { id: "add-lin" }),
+      tool("rotation", "Add a rotation axis (under the selected axis or frame, else at the top level)", () => addAxis("rotation"), { id: "add-rot" }),
+      tool("translation", "Add a translation axis (under the selected axis or frame, else at the top level)", () => addAxis("translation"), { id: "add-lin" }),
       tool("part", "Add a part from the selected mesh (or the only mesh)", addPart, { id: "add-part" }),
       tool("tool", "Add a tool marker (the tool centre point, TCP)", addTool, { id: "add-tool" }),
+      tool("frame", "Add a frame: a transform (position and rotation) that places everything under it", addFrame, { id: "add-frame" }),
       h("span", { class: "sep" }),
       tool("up", "Move the selected node up among its siblings", () => moveNode("up")),
       tool("down", "Move the selected node down among its siblings", () => moveNode("down")),
-      tool("into", "Move the selected node into the axis above it", () => moveNode("into")),
-      tool("out", "Move the selected node out of its axis, behind it", () => moveNode("out")),
+      tool("into", "Move the selected node into the axis or frame above it", () => moveNode("into")),
+      tool("out", "Move the selected node out of its axis or frame, behind it", () => moveNode("out")),
       h("span", { class: "sep" }),
       tool("delete", "Delete the selected node (and the nodes under it)", deleteNode, { id: "delete-node" })),
     box,
@@ -516,8 +523,86 @@ function dirName(d) {
 }
 const PRESETS = { "+X": [1, 0, 0], "-X": [-1, 0, 0], "+Y": [0, 1, 0], "-Y": [0, -1, 0], "+Z": [0, 0, 1], "-Z": [0, 0, -1] };
 
+// ---- formulas: the same safe linear forms as app/formula.py (never evaluated)
+const NUM = "[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?";
+const FORMS = [
+  [/^value$/, () => [1, 0]], [/^-\s*value$/, () => [-1, 0]],
+  [new RegExp(`^(${NUM})\\s*-\\s*value$`), (k) => [-1, k]], [new RegExp(`^(${NUM})\\s*\\+\\s*value$`), (k) => [1, k]],
+  [new RegExp(`^value\\s*\\+\\s*(${NUM})$`), (k) => [1, k]], [new RegExp(`^value\\s*-\\s*(${NUM})$`), (k) => [1, -k]],
+  [new RegExp(`^(${NUM})\\s*\\*\\s*value$`), (k) => [k, 0]], [new RegExp(`^value\\s*\\*\\s*(${NUM})$`), (k) => [k, 0]],
+  [new RegExp(`^value\\s*/\\s*(${NUM})$`), (k) => (k ? [1 / k, 0] : null)],
+];
+function parseFormula(text) {
+  const t = String(text ?? "").trim();
+  if (t === "") return [1, 0];
+  for (const [re, make] of FORMS) {
+    const m = re.exec(t);
+    if (m) { const r = make(...m.slice(1).map(Number)); return r && r.every(Number.isFinite) ? r : null; }
+  }
+  return null;
+}
+const isPassive = (n) => /^assignkin\(/i.test(String((n.xattrs && n.xattrs.customdata) || "").trim());
+function previewModel(n, v) {          // model value the preview applies for a MOTION value
+  if (isPassive(n)) return n.initial;
+  const f = parseFormula(n.formula);
+  return f ? f[0] * v + f[1] : v;
+}
+function modelValues() { return Object.fromEntries(axisNodes().map((n) => [n.name, previewModel(n, S.values[n.name] ?? 0)])); }
+function checkFormula(t) {
+  if (!t.trim()) throw new Error("a formula is expected (value)");
+  if (/[\r\n]/.test(t)) throw new Error("a formula is one line");
+  if (t.length > 200) throw new Error("a formula has at most 200 characters");
+  return t;
+}
+
+// ---- matrices (row-major, 16 numbers): position / rotation Rz*Ry*Rx in degrees / scale, like app/viewanalysis.decompose
+function decompose(m) {
+  const scale = [0, 1, 2].map((c) => Math.hypot(m[c], m[4 + c], m[8 + c]));
+  const r = [0, 1, 2].map((i) => [0, 1, 2].map((c) => (scale[c] > 1e-12 ? m[i * 4 + c] / scale[c] : 0)));
+  const ry = Math.asin(Math.max(-1, Math.min(1, -r[2][0])));
+  let rx, rz;
+  if (Math.abs(Math.cos(ry)) > 1e-9) { rx = Math.atan2(r[2][1], r[2][2]); rz = Math.atan2(r[1][0], r[0][0]); }
+  else { rx = Math.atan2(-r[1][2], r[1][1]); rz = 0; }
+  const rnd = (v) => Math.round(v * 1e6) / 1e6 + 0;
+  return { pos: [m[3], m[7], m[11]].map(rnd), rot: [rx, ry, rz].map((a) => rnd(a * 180 / Math.PI)), scale: scale.map(rnd) };
+}
+function compose(pos, rotDeg, scale) {
+  const [rx, ry, rz] = rotDeg.map((d) => d * Math.PI / 180);
+  const [cx, sx, cy, sy, cz, sz] = [Math.cos(rx), Math.sin(rx), Math.cos(ry), Math.sin(ry), Math.cos(rz), Math.sin(rz)];
+  const R = [[cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx], [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx], [-sy, cy * sx, cy * cx]];
+  return [0, 1, 2].flatMap((i) => [R[i][0] * scale[0], R[i][1] * scale[1], R[i][2] * scale[2], pos[i]]).concat([0, 0, 0, 1]);
+}
+function setPosition(x, v) { if (x.matrix) { x.matrix[3] = v[0]; x.matrix[7] = v[1]; x.matrix[11] = v[2]; } x.position = v; }
+
 function nodeField(id, value, apply, opts) {
   return UI.field(value, (text) => mutate((d) => apply(locate(d.tree, id).node, text, d)), opts);
+}
+
+function formulaNote(n) {
+  const f = parseFormula(n.formula);
+  const odd = (n.formula || "value").trim() !== "value";
+  return (f ? `The preview applies it: model = ${fmt(f[0])} × value + ${fmt(f[1])}.` : "Formula not applied in the preview (not a simple linear formula); the viewer still evaluates it.")
+    + (odd ? " The viewer ignores it for the MCS zones, see the zone check." : "");
+}
+function keptText(n) {
+  const parts = Object.entries(n.xattrs || {}).map(([k, v]) => `${k}="${v}"`);
+  if (n.tattrs) for (const [k, v] of Object.entries(n.tattrs)) parts.push(`transform ${k}="${v}"`);
+  if (n.xml_extra && n.xml_extra.length) parts.push(`${n.xml_extra.length} unknown XML element(s)`);
+  return parts.join("; ");
+}
+function keptRow(n) {
+  return ["Other attributes (kept)", UI.field(keptText(n) || "-", () => {}, { readonly: true, hint: "Attributes and XML elements the editor does not model: kept as read from the file and written back unchanged" }),
+    n.src ? "Read from the imported file, written back unchanged" : "Nothing kept"];
+}
+function matrixRows(n) {
+  const id = n.id, d = decompose(n.matrix);
+  const rows = [
+    ["Position (x, y, z) mm", nodeField(id, d.pos, (x, t) => { setPosition(x, toVec(t)); }, { hint: "Translation of the transform's matrix, in mm" }), "In the frame of the node it sits in"],
+    ["Rotation (rx, ry, rz) deg", nodeField(id, d.rot, (x, t) => { const c = decompose(x.matrix); x.matrix = compose(c.pos, toVec(t), c.scale); }, { hint: "Rotation of the matrix in degrees: Rz × Ry × Rx. Typing a rotation rebuilds the matrix from position, rotation and scale" }), "Rz × Ry × Rx"],
+  ];
+  if (d.scale.some((v) => Math.abs(v - 1) > 1e-9)) rows.push(["Scale (x, y, z)", UI.field(d.scale, () => {}, { readonly: true, hint: "Lengths of the matrix columns (change them in the matrix)" }), "Lengths of the matrix columns; kept when you change the rotation"]);
+  rows.push(["Matrix (16 numbers)", nodeField(id, n.matrix, (x, t) => { x.matrix = toVec(t, 16); if (x.kind === "tool") x.position = [x.matrix[3], x.matrix[7], x.matrix[11]]; }, { hint: "The 4 x 4 matrix row by row: r11, r12, r13, tx, r21, ... 0, 0, 0, 1" }), "The transform's initialvalue"]);
+  return rows;
 }
 
 function axisRows(n) {
@@ -528,23 +613,35 @@ function axisRows(n) {
   const rows = [
     ["Name", nodeField(id, n.name, (x, t) => { if (!t.trim()) throw new Error("a name is expected"); x.name = t.trim(); }, { hint: "Model axis name" }), "Axis name in the XML; must be unique in the project"],
     ["Type", nodeField(id, n.type, (x, t) => { x.type = t; }, { choices: ["rotation", "translation"], hint: "Axis type" }), "A rotation turns about the pivot, a translation slides along the direction"],
-    ["Direction preset", nodeField(id, dirName(n.direction), (x, t) => { if (t !== "custom") x.direction = PRESETS[t].slice(); }, { choices: ["+X", "-X", "+Y", "-Y", "+Z", "-Z", "custom"], hint: "Axis direction preset" }), "Direction in the assembly frame at the zero pose"],
+    ["Direction preset", nodeField(id, dirName(n.direction), (x, t) => { if (t !== "custom") x.direction = PRESETS[t].slice(); }, { choices: ["+X", "-X", "+Y", "-Y", "+Z", "-Z", "custom"], hint: "Axis direction preset" }), n.src ? "In the local frame of the enclosing node, as in the imported file" : "Direction in the assembly frame at the zero pose"],
     ["Direction (x, y, z)", nodeField(id, n.direction, (x, t) => { x.direction = toVec(t); }, { hint: "Direction vector" }), "Any vector (not 0, 0, 0); the viewer normalises it"],
   ];
-  if (n.type === "rotation") rows.push(["Pivot (x, y, z) mm", nodeField(id, n.pivot, (x, t) => { x.pivot = toVec(t); }, { hint: "A point on the rotation axis, in mm" }), "A point on the axis in the assembly frame at the zero pose (written in the frame the axis element is in)"]);
+  if (n.type === "rotation") rows.push(["Pivot (x, y, z) mm", nodeField(id, n.pivot, (x, t) => { x.pivot = toVec(t); }, { hint: "A point on the rotation axis, in mm" }), n.src ? "In the local frame of the enclosing node, as in the imported file" : "A point on the axis in the assembly frame at the zero pose (written in the frame the axis element is in)"]);
   rows.push(
-    ["Minimum", nodeField(id, n.range[0], (x, t) => { x.range[0] = toNumber(t); }, { hint: `Lowest value in ${unit} (MOTION axis units)` }), `${unit}, in the MOTION axis' units`],
-    ["Maximum", nodeField(id, n.range[1], (x, t) => { x.range[1] = toNumber(t); }, { hint: `Highest value in ${unit} (MOTION axis units)` }), `${unit}, in the MOTION axis' units`],
-    ["Initial value", nodeField(id, n.initial, (x, t) => { x.initial = toNumber(t); }, { hint: "Value shown before the axis sends one" }), `${unit}, in the MOTION axis' units`],
-    ["MOTION axis", bindingSelect(n), "The viewer sets this model axis from the MOTION axis (expression: value)." + typeMismatch],
-    ["Offset", nodeField(id, n.offset, (x, t) => { x.offset = toNumber(t); }, { hint: `Offset in ${unit}` }), `${unit}. Model value = offset + (±1) × MOTION value; built into the XML, never into the expression`],
+    ["Minimum", nodeField(id, n.range[0], (x, t) => { x.range[0] = toNumber(t); }, { hint: `Lowest model value in ${unit}` }), `${unit}, model units (the MOTION axis' units while the formula is value)`],
+    ["Maximum", nodeField(id, n.range[1], (x, t) => { x.range[1] = toNumber(t); }, { hint: `Highest model value in ${unit}` }), `${unit}, model units (the MOTION axis' units while the formula is value)`],
+    ["Initial value", nodeField(id, n.initial, (x, t) => { x.initial = toNumber(t); }, { hint: "Value shown before the axis sends one" }), `${unit}, model units (the MOTION axis' units while the formula is value)`],
+    ["MOTION axis", bindingSelect(n), "The viewer sets this model axis from the MOTION axis (with the formula below)." + typeMismatch],
+    ["Formula", nodeField(id, n.formula || "value", (x, t) => { x.formula = checkFormula(t); }, { hint: "ExpressionScript sent to the 3D viewer: how the MOTION value becomes the model value. Written unchanged" }), formulaNote(n)],
+    ["Offset", nodeField(id, n.offset, (x, t) => { x.offset = toNumber(t); }, { hint: `Offset in ${unit}` }), `${unit}. Model value = offset + (±1) × MOTION value; built into the XML, separate from the formula`],
     ["Invert", nodeField(id, !!n.invert, (x, t) => { x.invert = t === "true"; }, { hint: "Invert the direction" }), "The model moves the other way: the direction is negated in the XML"]);
+  rows.push(keptRow(n));
   if (n.mcs_origin) rows.push(["Zone frame shift (x, y, z)", nodeField(id, n.mcs_origin, (x, t) => { const v = toVec(t); x.mcs_origin = v.some(Boolean) ? v : null; }, { hint: "MCS_Origin transform around this axis; 0, 0, 0 removes it" }), "From the zone check fix: an MCS_Origin parent that moves the zone frame; the geometry stays where it was"]);
   return rows;
 }
 
 function hexOf(c) { return "#" + c.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0")).join(""); }
 function colourOf(hex) { return [1, 3, 5].map((i) => +(parseInt(hex.slice(i, i + 2), 16) / 255).toFixed(7)); }
+
+function importedSummary(p) {
+  const md = p.machine_data || {};
+  const bits = [];
+  if (md.attrs) bits.push("machine_data " + Object.entries(md.attrs).map(([k, v]) => `${k}="${v}"`).join(" "));
+  const extra = (md.xml_extra || []).length + (p.xml_extra || []).length + (p.xml_prolog || []).length;
+  if (extra) bits.push(`${extra} comment/unknown element(s)`);
+  if ((p.orphan_bindings || []).length) bits.push(`${p.orphan_bindings.length} binding(s) without an axis`);
+  return bits.join("; ") || "-";
+}
 
 function propertiesCard() {
   const p = S.project;
@@ -553,19 +650,30 @@ function propertiesCard() {
   if (n && n.kind === "axis") { title = `${n.type === "rotation" ? "Rotation" : "Translation"} axis ${n.name}`; rows = axisRows(n); }
   else if (n && n.kind === "part") {
     title = `Part ${n.name}`;
-    const colour = h("input", { type: "color", id: "part-colour", value: hexOf(n.colour), title: "Colour of the part in the viewer" });
+    const colour = h("input", { type: "color", id: "part-colour", value: hexOf(n.colour || [0.6, 0.6, 0.6]), title: n.colour ? "Colour of the part in the viewer" : "The file sets no colour: the viewer's default is used; picking one sets it" });
     colour.addEventListener("change", () => guard(() => mutate((d) => { locate(d.tree, n.id).node.colour = colourOf(colour.value); })));
     rows = [
       ["Name", nodeField(n.id, n.name, (x, t) => { if (!t.trim()) throw new Error("a name is expected"); x.name = t.trim(); }, { hint: "Part name" }), "Geometry name in the XML"],
-      ["Mesh", nodeField(n.id, n.mesh, (x, t) => { x.mesh = t; }, { choices: Object.keys(p.meshes), hint: "Mesh of the part" }), "An uploaded STL; its placement is set under Meshes"],
-      ["Colour", colour, "Colour in the viewer (the preview uses it too)"],
+      ["Mesh", nodeField(n.id, n.mesh || "", (x, t) => { x.mesh = t; }, { choices: Object.keys(p.meshes), hint: "Mesh of the part" }), n.src ? "A mesh file of the project (stored under its real file name)" : "An uploaded STL; its placement is set under Meshes"],
+      ["Colour", colour, n.colour ? "Colour in the viewer (the preview uses it too)" : "Not set in the file"],
+      ["Alpha", nodeField(n.id, n.alpha ?? "", (x, t) => { x.alpha = t.trim() === "" && x.src ? null : toNumber(t); }, { hint: "Transparency: 0 = opaque, 1 = invisible" }), "0 = opaque"],
     ];
+    if (n.matrix) rows.push(...matrixRows(n));
+    else if (n.bare) rows.push(["Placement", UI.field("none (no transform around it)", () => {}, { readonly: true, hint: "The geometry sits directly in its parent, without a transform" }), "As in the imported file"]);
+    if (n.transform_name) rows.push(["Transform name", UI.field(n.transform_name, () => {}, { readonly: true, hint: "Name of the transform around the geometry in the XML" }), "Kept from the imported file"]);
+    rows.push(keptRow(n));
   } else if (n && n.kind === "tool") {
     title = `Tool marker ${n.name}`;
     rows = [
-      ["Name", nodeField(n.id, n.name, (x, t) => { if (!t.trim()) throw new Error("a name is expected"); x.name = t.trim(); }, { hint: "Tool marker name" }), "Geometry name in the XML"],
-      ["Position (x, y, z) mm", nodeField(n.id, n.position, (x, t) => { x.position = toVec(t); }, { hint: "Tool centre point in mm" }), "Where the TCP is at the zero pose, in the assembly frame"],
-    ];
+      ["Name", nodeField(n.id, n.name, (x, t) => { if (!t.trim()) throw new Error("a name is expected"); x.name = t.trim(); }, { hint: "Tool marker name" }), "Geometry name in the XML"]];
+    if (n.matrix) rows.push(...matrixRows(n));
+    else rows.push(["Position (x, y, z) mm", nodeField(n.id, n.position, (x, t) => { setPosition(x, toVec(t)); }, { hint: "Tool centre point in mm" }), "Where the TCP is at the zero pose, in the assembly frame"]);
+    if (n.transform_name) rows.push(["Transform name", UI.field(n.transform_name, () => {}, { readonly: true, hint: "Name of the transform around the geometry in the XML" }), "Kept from the imported file"]);
+    if (n.src) rows.push(keptRow(n));
+  } else if (n && n.kind === "frame") {
+    title = `Frame ${n.name}`;
+    rows = [["Name", nodeField(n.id, n.name, (x, t) => { if (!t.trim()) throw new Error("a name is expected"); x.name = t.trim(); }, { hint: "Frame (transform) name" }), "Transform name in the XML"],
+      ...matrixRows(n), keptRow(n)];
   } else if (S.selection && S.selection.kind === "mesh" && p.meshes[S.selection.id]) {
     const mid = S.selection.id, m = p.meshes[mid];
     title = `Mesh ${m.file}`;
@@ -583,29 +691,43 @@ function propertiesCard() {
       ["Name", UI.field(p.name, () => {}, { readonly: true, hint: "Project name" }), "Rename it with the pencil button under Projects"],
       ["Stored in", UI.field(p.location === "config" ? "Active configuration (in backups)" : "This app only (not in backups)", () => {}, { readonly: true, hint: "Storage location" }), "Move it with the folder button under Projects"],
       ["Kinematic", UI.field(k ? `${k.name} (${k.type || "?"})` : "none", () => {}, { readonly: true, hint: "Kinematic the tree was started from" }), "Set by Start from kinematic"],
+      ["Viewer name", UI.field(p.viewer_name || p.name, (t) => mutate((d) => { d.viewer_name = t.trim(); }), { hint: "The project's name in the 3D viewer: Upload to viewer goes there (check the name with the button Upload as new name)" }), p.viewer_name && p.viewer_name !== p.name ? "Upload replaces this viewer project after a confirmation" : "Upload goes to the viewer project with the project's name"],
       ["Uploaded to viewer", UI.field((p.extra && p.extra.uploaded_at) || "never", () => {}, { readonly: true, hint: "Last upload to the 3D viewer" }), ""],
     ];
+    if (p.root === "none") rows.push(["Imported file", UI.field(importedSummary(p), () => {}, { readonly: true, hint: "What was kept from the imported 3D viewer project: machine_data, unknown XML elements, comments, bindings without an axis" }), "Kept and written back unchanged; no wrapper transform is added"]);
   }
   return h("section", { class: "card", id: "props-card" }, h("h2", {}, title), UI.settings(rows));
 }
 
+const inv = (f, model) => (f && f[0] !== 0 ? (model - f[1]) / f[0] : 0);       // MOTION value of a model value
+
 function jointsCard() {
   const axes = axisNodes();
   const rows = axes.map((n) => {
-    const lo = n.range[0], hi = n.range[1];
+    const f = parseFormula(n.formula);
+    const passive = isPassive(n);
+    let lo = inv(f || [1, 0], n.range[0]), hi = inv(f || [1, 0], n.range[1]);
+    if (lo > hi) [lo, hi] = [hi, lo];
     const span = hi > lo ? hi - lo : 1000;
     const v = S.values[n.name] ?? 0;
-    const num = h("input", { type: "number", class: "joint-num", value: v, step: "any", title: `${n.name} value for the preview (${n.type === "rotation" ? "deg" : "mm"}); only moves the preview` });
-    const rng = h("input", { type: "range", class: "joint-range", min: hi > lo ? lo : -1000, max: hi > lo ? hi : 1000, step: span / 400, value: v, title: `Drag to move ${n.name} in the preview` });
-    const set = (val) => { S.values[n.name] = val; preview.setValue(n.name, val); };
+    const unit = n.type === "rotation" ? "deg" : "mm";
+    const why = passive ? `${n.name} is a passive joint: the viewer solves it from the kinematic` : "";
+    const num = h("input", { type: "number", class: "joint-num", value: v, step: "any", disabled: passive, title: why || `${n.name} MOTION value for the preview (${unit}); only moves the preview` });
+    const rng = h("input", { type: "range", class: "joint-range", min: hi > lo ? lo : -1000, max: hi > lo ? hi : 1000, step: span / 400, value: v, disabled: passive, title: why || `Drag to move ${n.name} in the preview (MOTION value)` });
+    const out = h("span", { class: "joint-model", title: "Model value the preview applies (after the formula)" }, fmt(previewModel(n, v)));
+    const set = (val) => { S.values[n.name] = val; out.textContent = fmt(previewModel(n, val)); preview.setValue(n.name, previewModel(n, val)); };
     rng.addEventListener("input", () => { num.value = fmt(rng.value); set(+rng.value); });
     num.addEventListener("input", () => { if (num.value !== "" && Number.isFinite(+num.value)) { rng.value = num.value; set(+num.value); } });
-    return { n, num, rng };
+    const odd = (n.formula || "value").trim() !== "value";
+    const note = odd || passive ? h("span", { class: "small dim joint-note", title: passive ? "Passive joint: the preview shows it at its initial value" : f ? "The formula the preview applies: model value from the MOTION value" : "The formula is not a simple linear formula, so the preview uses the value as it is" },
+      passive ? "passive: solved by the kinematic" : f ? `model = ${n.formula.trim()}` : `${n.formula.trim()}: formula not applied`) : null;
+    return { n, num, rng, out, note };
   });
   const t = UI.table([
-    { label: "Axis", hint: "Model axis; click to select it", get: (r) => r.n.name },
+    { label: "Axis", hint: "Model axis; click to select it", get: (r) => h("span", {}, r.n.name, r.note) },
     { label: "Slider", hint: "Moves the axis in the preview only", get: (r) => r.rng },
-    { label: "Value", hint: "Axis value in the preview, deg or mm", get: (r) => r.num },
+    { label: "Value", hint: "MOTION value in the preview, deg or mm", get: (r) => r.num },
+    { label: "Model", hint: "Model value after the formula (what the viewer would show)", get: (r) => r.out, num: true },
   ], rows, { key: (r) => r.n.id, empty: "No axes yet", cls: "joint-table", id: "joints-table" });
   t.addEventListener("click", (ev) => {
     const tr = ev.target.closest("tr[data-key]");
@@ -614,7 +736,7 @@ function jointsCard() {
   t.querySelectorAll("tr[data-key]").forEach((tr) => { if (S.selection && S.selection.id === tr.dataset.key) tr.classList.add("cur"); });
   return h("section", { class: "card", id: "joints-card" },
     h("h2", {}, h("span", { class: "grow" }, "Joints (preview only)"),
-      tool("reset", "Set all joints to 0 in the preview", () => { S.values = {}; preview.setValues(Object.fromEntries(axes.map((n) => [n.name, 0]))); renderAll(); }, { id: "zero-joints" })),
+      tool("reset", "Set all joints to 0 in the preview", () => { S.values = {}; preview.setValues(modelValues()); renderAll(); }, { id: "zero-joints" })),
     t);
 }
 
@@ -645,7 +767,8 @@ function renderToolbar() {
   $("toolbar").replaceChildren(
     wide("save", "Save", "Changes are saved as soon as they are made; this saves again and rebuilds the preview", () => guard(() => mutate(() => {})), { disabled: !has, id: "save" }),
     wide("download", "Download zip", "Download the viewer package (Model.zip with the XML and STLs, and the axis binding JSON)", () => guard(downloadZip), { disabled: !has, id: "download-zip" }),
-    wide("upload", "Upload to viewer", "Send the model and its axis bindings to the ctrlX 3D viewer", () => guard(uploadToViewer), { disabled: !has, primary: true, id: "upload-viewer" }));
+    wide("upload", "Upload to viewer", has ? `Send the model and its axis bindings to the 3D viewer project ${S.project.viewer_name || S.project.name} (asks before it replaces one)` : "Send the model and its axis bindings to the ctrlX 3D viewer", () => guard(uploadToViewer), { disabled: !has, primary: true, id: "upload-viewer" }),
+    wide("copy", "Upload as new name…", "Ask for a new name, check that the 3D viewer has no project with it, upload under it and remember it as the project's viewer name", () => guard(uploadAsNew), { disabled: !has, id: "upload-new" }));
 }
 async function downloadZip() {
   const r = await api("GET", `/projects/${enc(S.project.name)}/package`, undefined, { raw: true });
@@ -661,12 +784,34 @@ async function uploadToViewer() {
     r = await api("POST", `/projects/${name}/upload-to-viewer`, {});
   } catch (e) {
     if (e.code !== "EXISTS") throw e;
-    if (!confirm(`${e.message}\n\nReplace the viewer's project ${S.project.name}?`)) return;
+    if (!confirm(e.message)) return;
     r = await api("POST", `/projects/${name}/upload-to-viewer?replace=1`, {});
   }
-  S.project = await api("GET", `/projects/${name}`);
-  banner(`Uploaded to the 3D viewer: ${r.files} files${r.replaced ? " (replaced)" : ""}, ${r.bound_axes} axes bound`, true);
+  await uploaded(r);
+}
+async function uploaded(r) {
+  S.project = await api("GET", `/projects/${enc(S.project.name)}`);
+  const miss = r.missing_meshes && r.missing_meshes.length ? `. Missing meshes left out: ${r.missing_meshes.join(", ")}` : "";
+  banner(`Uploaded to the 3D viewer as ${r.viewer_name}: ${r.files} files${r.replaced ? " (replaced)" : ""}, ${r.bound_axes} axes bound${miss}`, true);
+  renderAll();
   loadList(true);
+  loadViewerList();
+}
+async function uploadAsNew() {
+  await loadViewerList();
+  const taken = () => S.vlist.projects.map((n) => n.toLowerCase());
+  const name = nameInput(S.project.viewer_name && S.project.viewer_name !== S.project.name ? S.project.name : S.project.name + "_2");
+  const body = UI.settings([["New name", name, "A project name in the 3D viewer that does not exist yet (letters, digits, space, _ - .)"]]);
+  if (await dialog("Upload as new name", body, "Upload", () => {
+    const v = name.value.trim();
+    if (!v) return "Enter a name";
+    return taken().includes(v.toLowerCase()) ? `The 3D viewer has a project named ${v} already: choose another name` : "";
+  })) {
+    await guard(async () => {
+      const r = await api("POST", `/projects/${enc(S.project.name)}/upload-to-viewer?as=${enc(name.value.trim())}`, {});
+      await uploaded(r);
+    });
+  }
 }
 
 function renderChips() {
@@ -700,8 +845,25 @@ function syncPreview() {
   preview.select(n && n.kind === "axis" ? { axis: n.name } : n && n.kind === "part" ? { part: n.name } : null);
 }
 
+// Scroll positions of the two columns and of every scrolling box inside them (the tree boxes, ...), by element id: the
+// columns are rebuilt on every render, and a rebuilt box would start at the top (clicking a node scrolled the tree back).
+function scrollState() {
+  const st = {};
+  for (const col of [$("left"), $("right")]) {
+    st[col.id] = [col.scrollTop, col.scrollLeft];
+    col.querySelectorAll("[id]").forEach((e) => { if (e.scrollTop || e.scrollLeft) st[e.id] = [e.scrollTop, e.scrollLeft]; });
+  }
+  return st;
+}
+function restoreScroll(st) {
+  for (const [id, [top, left]] of Object.entries(st)) {
+    const e = $(id);
+    if (e) { e.scrollTop = top; e.scrollLeft = left; }
+  }
+}
+
 function renderAll() {
-  const keep = [$("left").scrollTop, $("right").scrollTop];
+  const keep = scrollState();
   renderToolbar();
   renderChips();
   renderReadonlyBar();
@@ -712,8 +874,7 @@ function renderAll() {
   else right.push(h("section", { class: "card" }, h("h2", {}, "Start"), h("p", { class: "hint" }, "Create a project (+ under Projects), upload your STL files, build the tree of axes and parts, bind the axes to MOTION axes and upload the model to the 3D viewer.")));
   $("left").replaceChildren(...left);
   $("right").replaceChildren(...right);
-  $("left").scrollTop = keep[0];
-  $("right").scrollTop = keep[1];
+  restoreScroll(keep);
   renderStageBar();
 }
 
@@ -729,7 +890,8 @@ function viewerCard() {
   const table = UI.table([
     { label: "Name", hint: "Name of a project in the 3D viewer app", get: (n) => n },
     { label: "", hint: "Actions", get: (n) => h("span", { class: "tools", style: "margin:0;flex-wrap:nowrap" },
-      tool("eye", `Open ${n} read-only: see the model, its axes, bindings and warnings. Nothing is changed.`, (ev) => { ev.stopPropagation(); guard(() => openView(n)); }, { class: "tool view-open", "data-name": n })) },
+      tool("eye", `Open ${n} read-only: see the model, its axes, bindings and warnings. Nothing is changed.`, (ev) => { ev.stopPropagation(); guard(() => openView(n)); }, { class: "tool view-open", "data-name": n }),
+      tool("import", `Import ${n} for editing: make an editable project of this app from it (the viewer's project is not changed)`, (ev) => { ev.stopPropagation(); guard(() => importViewer(n)); }, { class: "tool view-import", "data-name": n })) },
   ], v.projects, { key: (n) => n, empty: v.loaded ? (v.error ? "-" : "The 3D viewer has no projects") : "Loading ...", id: "viewer-table", cls: "projects-table" });
   table.addEventListener("click", (ev) => {
     const tr = ev.target.closest("tr[data-key]");
@@ -743,7 +905,6 @@ function viewerCard() {
     table);
 }
 
-const inv = (f, model) => (f && f[0] !== 0 ? (model - f[1]) / f[0] : 0);       // MOTION value of a model value
 function usedFormula(a) { return a.formula || [1, 0]; }
 function modelValue(a) {
   if (a.passive) return a.initial;
@@ -777,6 +938,31 @@ async function openView(name) {
   banner(`${name} opened read only: ${d.axes.length} axes, ${d.warnings.length} warnings`, true);
   renderAll();
 }
+const safeProjectName = (n) => String(n).replace(/[^A-Za-z0-9_. -]/g, "_").replace(/^[. -]+/, "").replace(/[. ]+$/, "").slice(0, 64) || "imported";
+async function importViewer(viewerName) {
+  const name = nameInput(safeProjectName(viewerName)), st = storageTable("config");
+  const body = h("div", {}, UI.settings([["Project name", name, "Name of the new project in this app: unique in both locations (the viewer name is remembered for the upload)"]]), h("p", { class: "hint" }, "Storage"), st.el);
+  const clash = () => {
+    const v = name.value.trim();
+    if (!v) return "Enter a project name";
+    return S.projects.some((p) => p.name.toLowerCase() === v.toLowerCase()) ? `A project named ${v} exists already: choose another name` : "";
+  };
+  if (!(await dialog(`Import ${viewerName} for editing`, body, "Import", clash))) return;
+  banner(`Importing ${viewerName} ...`, true);
+  const send = (confirmDrops) => api("POST", `/viewer/projects/${enc(viewerName)}/import`, { name: name.value.trim(), location: st.value, confirm: confirmDrops });
+  let r;
+  try { r = await send(false); }
+  catch (e) {
+    if (e.code !== "DROPS") throw e;
+    if (!confirm(`${e.message}\n\nImport anyway? These parts of the file are not kept.`)) { banner(""); return; }
+    r = await send(true);
+  }
+  await loadList(true);
+  await openProject(r.project.name);
+  const c = r.report.counts;
+  const bits = [`${c.axes} axes, ${c.parts} parts, ${c.tools} tools, ${c.frames} frames`].concat(r.report.kept, r.report.notes);
+  banner(`Imported ${viewerName} as ${r.project.name}: ${bits.join(". ")}`, true);
+}
 function leaveView() {
   S.view = null; S.selection = null; S.cache.clear(); S.zone = null; S.values = {};
   preview.reset();
@@ -796,6 +982,7 @@ function renderReadonlyBar() {
   bar.replaceChildren(ico("eye"),
     h("span", { class: "grow", id: "readonly-text", title: "This view only reads the project from the 3D viewer: it never writes to the viewer and never saves anything" },
       `Read only: ${S.view.name} from the 3D viewer. Nothing is changed.`),
+    wide("import", "Import for editing", "Make an editable project of this app from the viewer project (it asks for a name and where to store it)", () => guard(() => importViewer(S.view.name)), { id: "import-view" }),
     wide("close", "Close view", "Close the read-only view and go back to the editor", () => guard(closeView), { id: "close-view" }));
 }
 
@@ -985,6 +1172,43 @@ preview = createPreview($("stage"), {
   onInfo: (info) => { S.info = info; renderStageBar(); },
 });
 window.__mb = { S, preview };
+
+// ---- resizable left and right column. The left handle is the framework's UI.splitter (UI.splitter(panel) sets --ui-side on
+// the layout); the framework has none for a right panel, so the right handle is made here with the same look and the same
+// behaviour (drag, arrow keys, double-click = standard width, remembered per browser, works without localStorage).
+const LEFT = { min: 240, max: 640 }, RIGHT = { min: 300, max: 800, standard: 500 };
+UI.splitter($("left"), { storeKey: "left", min: LEFT.min, max: LEFT.max });
+function rightSplitter() {
+  const layout = $("layout"), panel = $("right");
+  const hd = h("div", { class: "ui-splitter", role: "separator", "aria-orientation": "vertical", tabindex: "0", id: "split-right",
+    title: "Drag to make the right panel wider or narrower (or the arrow keys); double-click: standard width" });
+  const width = () => panel.getBoundingClientRect().width;
+  const clamp = (w) => Math.round(Math.max(RIGHT.min, Math.min(RIGHT.max, window.innerWidth - $("left").getBoundingClientRect().width - 300, w)));
+  function set(w, keep) {
+    if (w === null) layout.style.removeProperty("--mb-right"); else layout.style.setProperty("--mb-right", clamp(w) + "px");
+    hd.setAttribute("aria-valuenow", String(Math.round(width())));
+    if (keep) localSet("width.right", w === null ? "" : String(clamp(w)));
+  }
+  panel.before(hd);
+  const saved = Number(localGet("width.right"));
+  if (saved > 0) set(saved);
+  hd.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault();
+    try { hd.setPointerCapture(ev.pointerId); } catch (e) { /* a synthetic event (tests) has no pointer to capture */ }
+    const right = panel.getBoundingClientRect().right;
+    layout.classList.add("ui-resizing");
+    const move = (e) => set(right - e.clientX);
+    const up = () => { hd.removeEventListener("pointermove", move); hd.removeEventListener("pointerup", up); layout.classList.remove("ui-resizing"); set(width(), true); };
+    hd.addEventListener("pointermove", move);
+    hd.addEventListener("pointerup", up);
+  });
+  hd.addEventListener("keydown", (ev) => {
+    if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") { ev.preventDefault(); set(width() + (ev.key === "ArrowLeft" ? 16 : -16), true); }
+    if (ev.key === "Home") { ev.preventDefault(); set(null, true); }
+  });
+  hd.addEventListener("dblclick", () => set(null, true));
+}
+rightSplitter();
 
 $("file-input").addEventListener("change", (ev) => { const f = ev.target.files[0]; if (f) uploadMesh(f); });
 

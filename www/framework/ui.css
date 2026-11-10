@@ -7,7 +7,12 @@ button .ui-icon { margin-right: 6px; }
 .ui-icon-btn .ui-icon { margin: 0; }
 
 /* layout: side panel tree | page */
-.ui-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); align-items: start; min-height: calc(100vh - 57px); }
+.ui-layout { display: grid; grid-template-columns: var(--ui-side, var(--ui-side-default, 300px)) minmax(0, 1fr); align-items: start; min-height: calc(100vh - 57px); }
+/* UI.splitter: a 6px handle between the side panel and the page */
+.ui-layout.ui-has-splitter { grid-template-columns: var(--ui-side, var(--ui-side-default, 300px)) 6px minmax(0, 1fr); }
+.ui-splitter { position: sticky; top: 0; height: 100vh; cursor: col-resize; background: transparent; touch-action: none; margin-left: -3px; width: 9px; z-index: 5; }
+.ui-splitter:hover, .ui-splitter:focus-visible, .ui-resizing .ui-splitter { background: var(--accent); opacity: 0.35; outline: none; }
+.ui-resizing { cursor: col-resize; user-select: none; }
 .ui-tree { position: sticky; top: 0; height: 100vh; max-height: 100vh; overflow: auto; background: var(--card); border-right: 1px solid var(--line); padding: 6px 0 24px; font-size: 14px; }
 .ui-tree ul { list-style: none; margin: 0; padding: 0; }
 .ui-node { display: flex; align-items: center; gap: 6px; min-height: 30px; padding-right: 10px; cursor: pointer; white-space: nowrap; }
@@ -63,7 +68,8 @@ details.ui-sec > summary .ui-count { margin-left: 0; font-size: 13px; }
 .ui-settings td.ui-note { color: var(--muted); }
 .ui-mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; }
 .ui-wrap { white-space: normal; overflow-wrap: anywhere; }
-.ui-params td.ui-value { min-width: 160px; }
+.ui-params td.ui-value { min-width: 160px; max-width: 420px; white-space: normal; overflow-wrap: anywhere; }
+.ui-params td.ui-wrap { min-width: 220px; }
 .ui-lockcol { width: 28px; color: var(--muted); }
 .ui-err-text { color: var(--err); }
 .ui-pager { display: flex; align-items: center; gap: 10px; padding: 8px 0 0; color: var(--muted); }
@@ -84,7 +90,8 @@ details.ui-sec > summary .ui-count { margin-left: 0; font-size: 13px; }
 
 /* phone width */
 @media (max-width: 760px) {
-  .ui-layout { grid-template-columns: 1fr; }
+  .ui-layout, .ui-layout.ui-has-splitter { grid-template-columns: 1fr; }
+  .ui-splitter { display: none; }
   .ui-tree { position: static; max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--line); }
   .ui-main { padding: 0 12px 32px; }
 }
