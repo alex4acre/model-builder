@@ -5,8 +5,9 @@ Build 3D viewer models from STL files and bind them to ctrlX MOTION axes
 A ctrlX CORE app (snap, core24, Python 3.12 in the snap), made from ctrlx-baseline (version in `.baseline`).
 
 - **Web UI / REST:** `https://<ctrlx>/model-builder` (sidebar entry "3D Model Builder"); REST under `/model-builder/api/v1`, protected by the ctrlX proxy (bearer token).
-- **Data Layer:** `model-builder/counter` (uint64), `model-builder/setpoint` (float64, writable), `model-builder/state` (JSON string).
-- **Configuration:** `model-builder/config.json` in the app data of the active configuration (Settings → Manage app data); saved with ctrlX configurations and backups.
+- **Projects:** a folder `<root>/<name>/` with `project.json` and `meshes/*.stl`; root = `model-builder/projects` in the app data of the active configuration (in ctrlX backups) or `$SNAP_COMMON/projects` (not in backups), chosen per project.
+- **Data Layer:** `model-builder/state` (JSON string: number of projects).
+- **3D viewer:** uploads go to the 3D viewer app's REST API with the caller's token; its axis bindings are always sent again after an upload.
 
 ## Layout
 
@@ -14,12 +15,15 @@ A ctrlX CORE app (snap, core24, Python 3.12 in the snap), made from ctrlx-baseli
 | --- | --- |
 | `app/__init__.py` | the app's identity: name, title, environment prefix, development port |
 | `app/main.py` | start-up: app data folder, Data Layer (or the fake), nodes, web server |
-| `app/core.py` | configuration and the worker: replace the example logic here |
+| `app/core.py` | generated model, zone check, upload to the 3D viewer |
+| `app/storage.py`, `app/project.py` | project folders (two roots, unique names) and the project document (validation) |
+| `app/xmlgen.py`, `app/xmleval.py`, `app/zone.py` | machine_definition XML, forward kinematics of it, Cartesian zone check |
+| `app/motion.py`, `app/viewer.py` | MOTION reads (axes, kinematics), 3D viewer client |
 | `app/provider.py` | the app's own Data Layer nodes |
-| `app/fake.py` | the simulated ctrlX: the nodes the app uses, as the device gives them |
+| `app/fake.py` | the simulated ctrlX: MOTION axes, kinematics Gantry and Scara, a demo STL |
 | `app/web.py` | REST routes |
 | `app/framework/`, `www/framework/`, `tests/framework/` | **ctrlx-baseline framework: don't edit here** (change ctrlx-baseline, then `check.py --sync-framework`) |
-| `www/` | the UI (plain HTML/JS/CSS, no build step) |
+| `www/` | the UI (plain HTML/JS/CSS, no build step); `www/vendor/three/` is three.js 0.160.0 (MIT), no CDN at runtime |
 | `configs/package-assets/model-builder.package-manifest.json` | proxy mapping, sidebar menu, app data folder, configuration load/save hooks |
 | `snap/snapcraft.yaml` | snap definition; `deps` part = third-party libraries only, so code-only rebuilds are fast |
 | `deb/` | the ctrlx-datalayer .deb whose `libcomm_datalayer.so` is bundled |

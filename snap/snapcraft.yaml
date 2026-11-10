@@ -1,11 +1,11 @@
 name: model-builder
 title: 3D Model Builder
-version: 1.0.0
+version: 0.1.0
 summary: Build 3D viewer models from STL files and bind them to ctrlX MOTION axes
 description: |
   Build 3D viewer models from STL files and bind them to ctrlX MOTION axes
-  Web UI at https://<ctrlx>/model-builder (sidebar entry "3D Model Builder"), Data Layer nodes under model-builder/...,
-  configuration in the app data of the active configuration (model-builder/config.json).
+  Web UI at https://<ctrlx>/model-builder (sidebar entry "3D Model Builder"), Data Layer node model-builder/state,
+  projects in the app data of the active configuration (model-builder/projects) or in $SNAP_COMMON.
 base: core24
 confinement: strict
 grade: stable

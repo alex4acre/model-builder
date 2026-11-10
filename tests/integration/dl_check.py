@@ -21,6 +21,7 @@ import ctrlxdatalayer
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 import app  # noqa: E402
 from app.core import Core  # noqa: E402
+from app.storage import ProjectStore  # noqa: E402
 from app.framework.bus import BusError, DatalayerBus  # noqa: E402
 from app.framework.provider import NodeRegistry  # noqa: E402
 from app.provider import register  # noqa: E402
@@ -42,29 +43,25 @@ def main():
     check(provider.start() == ctrlxdatalayer.variant.Result.OK, "provider started with a local broker")
     bus = DatalayerBus(system, "ipc://")
     tmp = tempfile.TemporaryDirectory()
-    core = Core(tmp.name, bus, log=print)
+    store = ProjectStore(os.path.join(tmp.name, "cfg"), os.path.join(tmp.name, "common"))
+    store.create("DlCheck", "config")
+    core = Core(store, lambda token: bus, lambda token: None, log=print)
     registry = NodeRegistry(provider, R, log=print)
     register(registry, core)
-    core.start()
     time.sleep(0.5)
     try:
         check(bus.is_connected(), "client connected")
         children = bus.browse(R)
-        check(sorted(children) == ["counter", "setpoint", "state"], f"browse {R} -> {children}")
-        check(isinstance(bus.read(f"{R}/counter"), int), "read counter (uint64)")
-        check(bus.read(f"{R}/setpoint") == 0.0, "read setpoint (float64)")
-        bus.write(f"{R}/setpoint", 4.25)
-        check(core.config["setpoint"] == 4.25 and bus.read(f"{R}/setpoint") == 4.25, "write setpoint through the Data Layer")
+        check(children == ["state"], f"browse {R} -> {children}")
         state = json.loads(bus.read(f"{R}/state"))
-        check(state.get("setpoint") == 4.25, f"read state (JSON string) -> {state}")
+        check(state.get("projects") == 1, f"read state (JSON string) -> {state}")
         try:
-            bus.write(f"{R}/counter", 5)
-            check(False, "writing the read-only counter is refused")
+            bus.write(f"{R}/state", "x")
+            check(False, "writing the read-only state is refused")
         except BusError as e:
-            check(e.code == "DL_PERMISSION_DENIED", f"writing the read-only counter is refused ({e.code})")
+            check(e.code == "DL_PERMISSION_DENIED", f"writing the read-only state is refused ({e.code})")
     finally:
         registry.clear()
-        core.stop()
         bus.close()
         provider.stop()
         provider.close()

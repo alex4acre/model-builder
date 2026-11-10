@@ -173,5 +173,41 @@ viewer's stock definitions and background images.
   answered early).
 - The user's L10409A_Gantry project was left untouched; all mb_spike_* projects were deleted.
 
+## Findings (2026-11-10, Phase 1)
+
+**R1: `rzx/rzy/rzz` (and the axis direction x/y/z) are in the LOCAL frame of the enclosing node, not in the world frame.**
+Evidence: the viewer's web client, read from the 3D Viewer 4.6.2 app in the shared folder (`main-N4QXBF5R.js`, no device
+access needed):
+- `createObjects()` builds every rotation axis as two nested objects: a pivot node `rzv_<name>` that is a CHILD of the
+  enclosing node, with `position = (rzx, rzy, rzz)`, and the axis object inside it with `position = -(rzx, rzy, rzz)`.
+  Positions in three.js are relative to the parent, so the pivot is a point in the enclosing node's local frame.
+- `moveAxis()` rotates the pivot node with `quaternion.setFromAxisAngle(axis, angle)` and the axis vector is the XML's
+  x/y/z, so the direction is in the same local frame. A translation sets `object.position = direction * value`, also local.
+- The examples (Scara Sort, the Gantry files) cannot tell the two readings apart: their axes sit directly inside each other
+  or inside rotation-only transforms with `rzx rzy rzz = 0`, so local and world coordinates agree.
+Consequences: the app stores pivots in the assembly frame at the zero pose. Every node the generator wraps around an axis
+(`<axis>_Offset`, `MCS_Origin_Inverse`) is an identity at that pose, so the stored pivots are written as they are. Only an
+axis that sits inside an `MCS_Origin` gets its pivot converted (`pivot - mcs_origin`). `app/xmleval.py` (forward
+kinematics used by the zone check and the tests) and `www/preview.js` follow the viewer's way; the tests check a rotation
+axis behind an `MCS_Origin` against the same model without it (identical geometry for random poses).
+
+**Zone frame (decision D7), read from the same client** (`calculateMcs4SixAxis` and the Cartesian variant): the origin is
+`localToWorld` of the pivot / object of the first kinematic axis's model axis (the world origin of the parent node at the
+zero pose), the directions are `axis * kinematic axis direction`, transformed to world with the parent's `matrixWorld`;
+ExpressionScripts are not used. `app/zone.py` checks exactly that. Test on the user's files: Gantry v3 (`Model_baked`) passes
+(parent of X at world (2250, 1500, 35), tool at the same point, directions -X, -Y, +Z right-handed); the original
+(`Model`, scripts `2250 - value` ...) warns (parent at (0, 0, 2035), tool at (2250, 1500, 35); the suggested origin shift is
+(2250, 1500, -2000), the MCS_Origin of Gantry v3).
+
+**Offsets and inversions** are baked into the XML (`<axis>_Offset` transform, negated direction); the ExpressionScript is
+always `value`. Checked numerically against `offset + s * value` for random poses (the XML keeps 7 digits, so the tests
+accept 0.01 mm).
+
+**Decisions made in Phase 1:** `mcs_origin` is a key on the axis node of the project JSON (kept through load/save). The
+kinematic in the project carries its axes (`{"name", "type", "axes": [{"name", "dir"}]}`) so the zone check needs no MOTION
+read. A project is saved at once after every edit; the Save button saves again. A mesh used by a part cannot be deleted.
+The package zip holds `Model.zip` and `<name>.json` (no thumbnail: the viewer's `thumbnail.png` is a data URL text it
+renders itself on first open).
+
 ## Next step
-Phase 1, after the user's go.
+Device test on the X3 at .22 by the user (build 2 axes, upload, jog), then Phase 2.
