@@ -31,6 +31,10 @@ const PATHS = {
   upload: "M5 20h14v-2H5v2zm0-10h4v6h6v-6h4l-7-7-7 7z",
   download: "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z",
   save: "M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-4-4zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H5V5h10v4z",
+  eye: "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z",
+  refresh: "M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z",
+  close: "M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z",
+  frame: "M3 21V3h2v16h16v2H3zm5-6V8l5 3.5L8 15zm6-2 5-3.5V17l-5-4z",
   reset: "M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62A7.95 7.95 0 0 1 12.5 10c3.54 0 6.55 2.31 7.6 5.5l2.37-.78A10.02 10.02 0 0 0 12.5 8z",
 };
 function ico(name) {
@@ -52,6 +56,8 @@ const S = {
   axes: [], kins: [], motionError: "",
   unit: "mm", stamps: {}, cache: new Map(),
   info: null,
+  vlist: { projects: [], error: "", loaded: false },       // the 3D viewer's projects
+  view: null,                                               // the read-only view of a viewer project (see openView)
 };
 let preview = null;
 
@@ -130,6 +136,17 @@ async function refreshModel() {
 
 // ---------------------------------------------------------------- meshes for the preview
 async function loadMesh(file) {
+  if (S.view) {                     // a viewer project: the cache route matches names in any case
+    const key = `view/${S.view.seq}/${file}`;
+    if (!S.cache.has(key)) {
+      S.cache.set(key, (async () => {
+        const r = await fetch(`${API}/viewer/cache/${enc(file)}`, { headers: { Authorization: "Bearer " + TOKEN } });
+        if (!r.ok) throw new Error("HTTP " + r.status + " (the file is not in the project)");
+        return new STLLoader().parse(await r.arrayBuffer());
+      })());
+    }
+    return S.cache.get(key);
+  }
   const name = S.project.name;
   const key = `${name}/${file}/${S.stamps[file] || 0}`;
   if (!S.cache.has(key)) {
@@ -157,13 +174,14 @@ async function loadList(force) {
   }
   if ((!same || force) && (force || !UI.busy(document.body))) renderAll();
 }
-function closeProject() {
+function closeProject(keepLast) {
   S.project = null; S.selection = null; S.zone = null; S.sizes = {}; S.values = {}; S.cache.clear();
   preview.reset();
-  localSet("last", "");
+  if (!keepLast) localSet("last", "");
 }
 async function openProject(name, keepSelection) {
   const p = await api("GET", `/projects/${enc(name)}`);
+  if (S.view) { leaveView(); keepSelection = false; }
   if (!keepSelection) { S.selection = null; S.values = {}; S.cache.clear(); preview.reset(); }
   S.project = p;
   S.openedGeneration = S.generation;
@@ -387,13 +405,13 @@ function projectsCard() {
   ], S.projects, { key: (p) => p.name, empty: "No projects yet: create one with the + button", id: "projects-table", cls: "projects-table" });
   table.addEventListener("click", (ev) => {
     const tr = ev.target.closest("tr[data-key]");
-    if (tr && (!S.project || S.project.name !== tr.dataset.key)) guard(() => openProject(tr.dataset.key));
+    if (tr && (S.view || !S.project || S.project.name !== tr.dataset.key)) guard(() => openProject(tr.dataset.key));
   });
   table.querySelectorAll("tr[data-key]").forEach((tr) => { if (S.project && tr.dataset.key === S.project.name) tr.classList.add("cur"); });
   return h("section", { class: "card", id: "projects-card" },
     h("h2", {}, "Projects"),
     h("div", { class: "tools", id: "project-tools" },
-      tool("add", "New project: choose its name and where it is stored", newProject, { id: "new-project" }),
+      tool("add", S.view ? "New project (not while a viewer project is open read-only)" : "New project: choose its name and where it is stored", newProject, { id: "new-project", disabled: !!S.view }),
       tool("edit", "Rename the open project", renameProject, { disabled: !has }),
       tool("copy", "Duplicate the open project", duplicateProject, { disabled: !has }),
       tool("move", "Move the open project to the other storage location", moveProject, { disabled: !has }),
@@ -652,9 +670,11 @@ async function uploadToViewer() {
 }
 
 function renderChips() {
-  $("project-chip").textContent = S.project ? `${S.project.name} (${S.project.location === "config" ? "in backups" : "not in backups"})` : "No project open";
-  const z = S.zone, chip = $("zone-chip");
-  if (!S.project || !z) { chip.textContent = "Zone: -"; chip.className = "chip"; chip.title = "Result of the zone check for a Cartesian kinematic"; return; }
+  $("project-chip").textContent = S.view ? `Viewing ${S.view.name} (read only)` : S.project ? `${S.project.name} (${S.project.location === "config" ? "in backups" : "not in backups"})` : "No project open";
+  if (S.view) { $("save-chip").textContent = "Read only"; $("save-chip").className = "chip"; $("save-chip").title = "A viewer project is only read: nothing is saved or written"; }
+  else if ($("save-chip").textContent === "Read only") { $("save-chip").textContent = "-"; $("save-chip").className = "chip"; $("save-chip").title = "Changes are saved as soon as they are made"; }
+  const z = S.view ? S.view.zone : S.zone, chip = $("zone-chip");
+  if (!(S.project || S.view) || !z) { chip.textContent = "Zone: -"; chip.className = "chip"; chip.title = "Result of the zone check for a Cartesian kinematic"; return; }
   if (!z.checked) { chip.textContent = "Zone: not checked"; chip.className = "chip"; chip.title = z.note; return; }
   chip.textContent = z.ok ? "Zone: OK" : "Zone: warning";
   chip.className = "chip " + (z.ok ? "ok" : "warn");
@@ -663,7 +683,7 @@ function renderChips() {
 
 function renderStageBar() {
   const i = S.info;
-  const text = !S.project ? "Open or create a project" : i ? `${i.axes} axes, ${i.parts} parts${i.loading ? " (loading ...)" : ""}, ${i.tools} tool markers${i.errors.length ? ". Error: " + i.errors[0] : ""}` : "";
+  const text = !(S.project || S.view) ? "Open or create a project, or view one from the 3D viewer" : i ? `${i.axes} axes, ${i.parts} parts${i.loading ? " (loading ...)" : ""}, ${i.tools} tool markers${i.errors.length ? ". Error: " + i.errors[0] : ""}` : "";
   $("stage-bar").replaceChildren(
     h("span", { id: "stage-info", title: "What the preview shows" }, text),
     h("span", { style: "flex:1" }),
@@ -671,6 +691,11 @@ function renderStageBar() {
 }
 
 function syncPreview() {
+  if (S.view) {
+    const v = viewNode();
+    preview.select(v && v.kind === "axis" ? { axis: v.name } : v && (v.kind === "geometry") ? { part: v.name } : null);
+    return;
+  }
   const n = currentNode();
   preview.select(n && n.kind === "axis" ? { axis: n.name } : n && n.kind === "part" ? { part: n.name } : null);
 }
@@ -679,15 +704,268 @@ function renderAll() {
   const keep = [$("left").scrollTop, $("right").scrollTop];
   renderToolbar();
   renderChips();
-  const left = [projectsCard()];
+  renderReadonlyBar();
+  const left = [projectsCard(), viewerCard()];
   const right = [];
-  if (S.project) { left.push(meshesCard(), treeCard()); right.push(propertiesCard(), jointsCard(), zoneCard()); }
+  if (S.view) { left.push(structureCard()); right.push(detailsCard(), bindingsCard(), viewJointsCard(), warningsCard(), viewZoneCard()); }
+  else if (S.project) { left.push(meshesCard(), treeCard()); right.push(propertiesCard(), jointsCard(), zoneCard()); }
   else right.push(h("section", { class: "card" }, h("h2", {}, "Start"), h("p", { class: "hint" }, "Create a project (+ under Projects), upload your STL files, build the tree of axes and parts, bind the axes to MOTION axes and upload the model to the 3D viewer.")));
   $("left").replaceChildren(...left);
   $("right").replaceChildren(...right);
   $("left").scrollTop = keep[0];
   $("right").scrollTop = keep[1];
   renderStageBar();
+}
+
+// ---------------------------------------------------------------- 3D viewer projects: list and read-only view
+async function loadViewerList() {
+  try { S.vlist = { projects: (await api("GET", "/viewer/projects")).projects, error: "", loaded: true }; }
+  catch (e) { S.vlist = { projects: [], error: e.message, loaded: true }; }
+  if (!UI.busy(document.body)) renderAll();
+}
+
+function viewerCard() {
+  const v = S.vlist;
+  const table = UI.table([
+    { label: "Name", hint: "Name of a project in the 3D viewer app", get: (n) => n },
+    { label: "", hint: "Actions", get: (n) => h("span", { class: "tools", style: "margin:0;flex-wrap:nowrap" },
+      tool("eye", `Open ${n} read-only: see the model, its axes, bindings and warnings. Nothing is changed.`, (ev) => { ev.stopPropagation(); guard(() => openView(n)); }, { class: "tool view-open", "data-name": n })) },
+  ], v.projects, { key: (n) => n, empty: v.loaded ? (v.error ? "-" : "The 3D viewer has no projects") : "Loading ...", id: "viewer-table", cls: "projects-table" });
+  table.addEventListener("click", (ev) => {
+    const tr = ev.target.closest("tr[data-key]");
+    if (tr && !ev.target.closest("button") && !(S.view && S.view.name === tr.dataset.key)) guard(() => openView(tr.dataset.key));
+  });
+  table.querySelectorAll("tr[data-key]").forEach((tr) => { if (S.view && tr.dataset.key === S.view.name) tr.classList.add("cur"); });
+  return h("section", { class: "card", id: "viewer-card" },
+    h("h2", {}, h("span", { class: "grow" }, "3D viewer projects"),
+      tool("refresh", "Read the project list of the 3D viewer app again", () => loadViewerList(), { id: "viewer-refresh" })),
+    v.error ? h("p", { class: "hint", id: "viewer-error", title: "Why the list is empty" }, v.error) : null,
+    table);
+}
+
+const inv = (f, model) => (f && f[0] !== 0 ? (model - f[1]) / f[0] : 0);       // MOTION value of a model value
+function usedFormula(a) { return a.formula || [1, 0]; }
+function modelValue(a) {
+  if (a.passive) return a.initial;
+  const f = usedFormula(a);
+  return f[0] * (S.view.motion[a.name] ?? 0) + f[1];
+}
+function formulaText(a) {
+  if (a.passive) return "solved by the viewer (assignKin)";
+  if (!a.binding) return "not bound: no formula";
+  return a.formula ? `model = ${a.script.trim() || "value"}` : "formula not applied";
+}
+function viewNode() { return S.view && S.selection && S.selection.kind === "vnode" ? S.view.byId[S.selection.id] || null : null; }
+
+async function openView(name) {
+  const previous = S.project ? S.project.name : S.view ? S.view.previous : "";
+  banner(`Reading ${name} from the 3D viewer ...`, true);
+  const d = await api("POST", `/viewer/projects/${enc(name)}/open`, {});
+  if (S.project) closeProject(true);
+  else if (S.view) leaveView();
+  const byId = {}, parent = {};
+  (function index(nodes, up) { for (const n of nodes) { byId[n.id] = n; parent[n.id] = up; if (n.children) index(n.children, n); } })(d.structure, null);
+  S.view = { name, data: d, byId, parent, previous, seq: Date.now(), motion: {}, zone: null, kin: "" };
+  for (const a of d.axes) S.view.motion[a.name] = a.passive ? 0 : inv(usedFormula(a), a.initial);       // the viewer starts at initial_value
+  const cartesian = S.kins.find((k) => k.cartesian);
+  S.view.kin = (cartesian || S.kins[0] || {}).name || "";
+  S.selection = null; S.cache.clear(); S.zone = null; S.sizes = {};
+  preview.reset();
+  S.modelError = "";
+  preview.setXml(d.xml).catch((e) => { S.modelError = e.message; banner(e.message); });
+  preview.setValues(Object.fromEntries(d.axes.map((a) => [a.name, modelValue(a)])));
+  banner(`${name} opened read only: ${d.axes.length} axes, ${d.warnings.length} warnings`, true);
+  renderAll();
+}
+function leaveView() {
+  S.view = null; S.selection = null; S.cache.clear(); S.zone = null; S.values = {};
+  preview.reset();
+}
+async function closeView() {
+  const prev = S.view.previous;
+  leaveView();
+  banner("");
+  if (prev && S.projects.some((p) => p.name === prev)) await openProject(prev);
+  else renderAll();
+}
+
+function renderReadonlyBar() {
+  const bar = $("readonly-bar");
+  bar.hidden = !S.view;
+  if (!S.view) { bar.replaceChildren(); return; }
+  bar.replaceChildren(ico("eye"),
+    h("span", { class: "grow", id: "readonly-text", title: "This view only reads the project from the 3D viewer: it never writes to the viewer and never saves anything" },
+      `Read only: ${S.view.name} from the 3D viewer. Nothing is changed.`),
+    wide("close", "Close view", "Close the read-only view and go back to the editor", () => guard(closeView), { id: "close-view" }));
+}
+
+function structureCard() {
+  const v = S.view;
+  const box = h("div", { class: "tree-box", id: "view-tree", title: "The structure of the model: transforms, axes, parts and the tool. Click a node for its details." });
+  const draw = (nodes) => h("ul", {}, nodes.map((n) => {
+    const sel = S.selection && S.selection.id === n.id;
+    const icon = n.kind === "axis" ? n.type : n.kind === "geometry" ? "part" : n.kind === "tool" ? "tool" : "frame";
+    const sub = n.kind === "axis" ? (n.passive ? "passive" : n.binding || "not bound") : n.kind === "geometry" ? n.geo : n.kind === "tool" ? "TCP" : "";
+    const row = h("div", { class: "ui-node" + (sel ? " ui-sel" : ""), "data-id": n.id, title: `${n.kind} ${n.name}${sub ? " (" + sub + ")" : ""}`, style: "padding-left:8px" },
+      h("span", { class: "kind", title: n.kind }, ico(icon)), h("span", { class: "ui-label" }, n.name || "(no name)"), h("span", { class: "ui-sub" }, sub));
+    row.addEventListener("click", () => { S.selection = { kind: "vnode", id: n.id }; renderAll(); syncPreview(); });
+    const li = h("li", {}, row);
+    if (n.children && n.children.length) { const ul = draw(n.children); ul.style.paddingLeft = "14px"; li.appendChild(ul); }
+    return li;
+  }));
+  box.appendChild(draw(v.data.structure));
+  return h("section", { class: "card", id: "structure-card" }, h("h2", {}, "Structure"), box);
+}
+
+function roField(value, hint) { return UI.field(value, () => {}, { readonly: true, hint }); }
+function detailsCard() {
+  const v = S.view, d = v.data, n = viewNode();
+  let title = "Project", rows;
+  const up = n ? v.parent[n.id] : null;
+  const placement = (t) => t && t.kind === "transform" ? [
+    ["Position (x, y, z) mm", roField(vecText(t.position), "Position from the initialvalue of the enclosing transform"), `From the transform "${t.name}", in the frame of the node it sits in`],
+    ["Rotation (rx, ry, rz) deg", roField(vecText(t.rotation), "Rotation from the initialvalue of the enclosing transform, Rz x Ry x Rx"), "Rz × Ry × Rx"]] : [];
+  if (n && n.kind === "transform") {
+    title = `Transform ${n.name}`;
+    rows = [["Name", roField(n.name, "Transform name"), ""],
+      ["Position (x, y, z) mm", roField(vecText(n.position), "Position from the initialvalue"), "In the frame of the node it sits in"],
+      ["Rotation (rx, ry, rz) deg", roField(vecText(n.rotation), "Rotation from the initialvalue, Rz x Ry x Rx"), "Rz × Ry × Rx"]];
+    if (n.scale.some((x) => Math.abs(x - 1) > 1e-9)) rows.push(["Scale (x, y, z)", roField(vecText(n.scale), "Scale in the matrix"), "Lengths of the matrix columns"]);
+    rows.push(["Raw initialvalue", roField(n.matrix.map(fmt).join(", "), "The 16 numbers of the 4 x 4 matrix, row by row"), "r11, r12, r13, tx, r21, ... , 0, 0, 0, 1"]);
+  } else if (n && n.kind === "axis") {
+    title = `${n.type === "rotation" ? "Rotation" : "Translation"} axis ${n.name}`;
+    const unit = n.type === "rotation" ? "deg" : "mm";
+    rows = [["Name", roField(n.name, "Model axis name"), ""],
+      ["Type", roField(n.type, "Axis type"), "A rotation turns about the pivot, a translation slides along the direction"],
+      ["Direction (x, y, z)", roField(vecText(n.direction), "Axis direction"), "In the frame of the enclosing node"]];
+    if (n.pivot) rows.push(["Pivot (x, y, z) mm", roField(vecText(n.pivot), "Point on the rotation axis"), "In the frame of the enclosing node"]);
+    rows.push(["Minimum", roField(fmt(n.min), `Lowest model value, ${unit}`), `${unit}, model units (after the formula)`],
+      ["Maximum", roField(fmt(n.max), `Highest model value, ${unit}`), `${unit}, model units (after the formula)`],
+      ["Initial value", roField(fmt(n.initial), `Model value the viewer starts at, ${unit}`), `${unit}, model units`],
+      ["Custom data", roField(n.customdata || "-", "customdata attribute"), n.passive ? "assignKin: the viewer solves this joint from the kinematic" : ""],
+      ["MOTION axis", roField(n.passive ? "(passive joint)" : n.binding || "not bound", "The MOTION axis this model axis follows"), "From the project's configuration JSON"],
+      ["ExpressionScript", roField(n.script || "-", "ExpressionScript of the binding"), "Turns the MOTION value into the model value"],
+      ["Formula", roField(n.passive || !n.binding ? "-" : n.formula ? `model = ${fmt(n.formula[0])} × value + ${fmt(n.formula[1])}` : "not understood", "The formula as the preview applies it"),
+        n.passive || !n.binding ? "" : n.formula ? "The preview applies it" : "Not understood: the preview uses the value, formula not applied"]);
+  } else if (n && (n.kind === "geometry" || n.kind === "tool")) {
+    title = n.kind === "tool" ? `Tool ${n.name}` : `Part ${n.name}`;
+    rows = [["Name", roField(n.name, "Geometry name"), ""], ["Object type", roField(n.objtype, "objtype attribute"), n.kind === "tool" ? "The tool centre point (TCP) marker" : ""]];
+    if (n.kind === "geometry") {
+      const colour = h("span", { class: "ui-ro", title: "Colour of the part, clrr / clrg / clrb (0 to 1)" },
+        h("span", { class: "swatch", style: `background:${hexOf(n.colour.map((c) => Math.min(1, Math.max(0, c))))}` }), vecText(n.colour));
+      rows.push(["Mesh file", roField(n.geo || "-", "STL file named by the geo attribute"),
+        n.present === false ? "Not in the project" : n.file && n.file !== n.geo ? `Found as ${n.file} (different upper/lower case)` : ""],
+        ["Colour (r, g, b)", colour, "0 to 1"], ["Alpha", roField(fmt(n.alpha), "alpha attribute"), "0 = opaque"]);
+    }
+    rows.push(...placement(up));
+    if (n.customdata) rows.push(["Custom data", roField(n.customdata, "customdata attribute"), ""]);
+  } else {
+    const bound = d.axes.filter((a) => a.binding).length;
+    rows = [["Name", roField(v.name, "Project name in the 3D viewer"), "Click a node in the structure for its details"],
+      ["Files", roField(`${d.files.length} (${fmtSize(d.files.reduce((x, f) => x + f.size, 0))})`, "Files read from the project"), d.files.map((f) => f.name).slice(0, 6).join(", ") + (d.files.length > 6 ? ", ..." : "")],
+      ["Axes", roField(`${d.axes.length}, ${bound} bound`, "Model axes and how many are bound to a MOTION axis"), ""],
+      ["Tool markers", roField(d.tools, "Number of tool markers"), ""],
+      ["Warnings", roField(d.warnings.length, "Number of warnings, see Warnings"), ""]];
+  }
+  return h("section", { class: "card", id: "props-card" }, h("h2", {}, title), UI.settings(rows));
+}
+
+function axisWarnings(name) { return S.view.data.warnings.filter((w) => w.axis === name); }
+const SHORT = { expression: "Formula ignored for MCS zones", unbound: "Not bound", assignkin: "Passive joint (assignKin)", binding_without_axis: "Not in the model", duplicate_axis: "Duplicate axis name" };
+
+function bindingsCard() {
+  const d = S.view.data;
+  const rows = d.axes.map((a) => ({ model: a.name, node: a.passive ? "-" : a.binding || "not bound", script: a.passive ? "-" : a.binding ? a.script || "value" : "-", formula: a.formula, bound: !!a.binding, passive: a.passive, name: a.name }));
+  for (const b of d.bindings) if (!b.in_model) rows.push({ model: b.model, node: b.node, script: b.script, formula: b.formula, bound: true, passive: false, name: b.model, orphan: true });
+  const t = UI.table([
+    { label: "Model axis", hint: "Axis name in the model (XML)", get: (r) => r.model },
+    { label: "MOTION axis", hint: "The MOTION axis (Data Layer node) that drives the model axis", get: (r) => r.node },
+    { label: "Formula", hint: "ExpressionScript: how the MOTION value becomes the model value", get: (r) => h("span", { title: r.formula ? `model = ${fmt(r.formula[0])} x value + ${fmt(r.formula[1])}` : r.bound && !r.passive ? "Not a simple linear formula: the preview cannot apply it" : "" }, r.script) },
+    { label: "Status", hint: "Warnings for this axis; OK means none", cls: "ui-wrap", get: (r) => {
+      const ws = axisWarnings(r.name);
+      return h("span", { class: "status-chips" }, ws.length ? ws.map((w) => h("span", { class: "chip " + (w.level === "info" ? "" : "warn"), title: w.text }, SHORT[w.code] || w.code)) : h("span", { class: "chip ok", title: "No warning for this axis" }, "OK"));
+    } },
+  ], rows, { key: (r) => r.model + (r.orphan ? "!" : ""), empty: "The model has no axes", id: "bindings-table", cls: "bind-table" });
+  return h("section", { class: "card", id: "bindings-card" }, h("h2", {}, "Bindings"), t);
+}
+
+function viewJointsCard() {
+  const v = S.view, d = v.data;
+  const outs = {};
+  const rows = d.axes.map((a) => {
+    const f = usedFormula(a);
+    const mv = v.motion[a.name] ?? 0;
+    let lo = inv(f, a.min), hi = inv(f, a.max);
+    if (lo > hi) [lo, hi] = [hi, lo];
+    if (!(hi > lo) || a.passive) { lo = a.type === "rotation" ? -360 : -1000; hi = -lo; }
+    const unit = a.type === "rotation" ? "deg" : "mm";
+    const off = !!a.passive;
+    const num = h("input", { type: "number", class: "joint-num", value: fmt(mv), step: "any", disabled: off, title: off ? `${a.name} is a passive joint: the viewer solves it from the kinematic` : `${a.name} MOTION value for the preview (${unit}); only moves the preview` });
+    const rng = h("input", { type: "range", class: "joint-range", min: lo, max: hi, step: (hi - lo) / 400, value: mv, disabled: off, title: off ? `${a.name} is a passive joint: the viewer solves it from the kinematic` : `Drag to move ${a.name} in the preview (MOTION value)` });
+    const out = h("span", { class: "joint-model", title: "Model value the preview applies (after the formula)" }, fmt(modelValue(a)));
+    const set = (val) => { v.motion[a.name] = val; out.textContent = fmt(modelValue(a)); preview.setValue(a.name, modelValue(a)); };
+    rng.addEventListener("input", () => { num.value = fmt(rng.value); set(+rng.value); });
+    num.addEventListener("input", () => { if (num.value !== "" && Number.isFinite(+num.value)) { rng.value = num.value; set(+num.value); } });
+    const note = h("span", { class: "small dim joint-note", title: off ? "Passive joint: the preview shows it at its initial value" : a.formula ? "The formula the preview applies: model value from the MOTION value" : a.binding ? "The ExpressionScript is not a simple linear formula, so the preview uses the MOTION value as it is" : "Not bound: the preview uses the value as it is" },
+      off ? "passive: solved by the kinematic" : a.binding && !a.formula ? `${a.script.trim()}: formula not applied` : a.binding ? `model = ${a.script.trim() || "value"}` : "not bound");
+    outs[a.id] = out;
+    return { a, num, rng, out, note };
+  });
+  const t = UI.table([
+    { label: "Axis", hint: "Model axis; click to select it", get: (r) => h("span", {}, r.a.name, r.note) },
+    { label: "Slider", hint: "Moves the axis in the preview only, in the units of the MOTION axis", get: (r) => r.rng },
+    { label: "Value", hint: "MOTION axis value in the preview, deg or mm", get: (r) => r.num },
+    { label: "Model", hint: "Model value after the formula (what the viewer would show)", get: (r) => r.out, num: true },
+  ], rows, { key: (r) => r.a.id, empty: "No axes", cls: "joint-table", id: "joints-table" });
+  t.addEventListener("click", (ev) => {
+    const tr = ev.target.closest("tr[data-key]");
+    if (tr && !ev.target.closest("input")) { S.selection = { kind: "vnode", id: tr.dataset.key }; renderAll(); syncPreview(); }
+  });
+  t.querySelectorAll("tr[data-key]").forEach((tr) => { if (S.selection && S.selection.id === tr.dataset.key) tr.classList.add("cur"); });
+  return h("section", { class: "card", id: "joints-card" },
+    h("h2", {}, h("span", { class: "grow" }, "Joints (preview only)"),
+      tool("reset", "Set all joints back to the initial values of the model", () => {
+        for (const a of d.axes) if (!a.passive) v.motion[a.name] = inv(usedFormula(a), a.initial);
+        preview.setValues(Object.fromEntries(d.axes.map((a) => [a.name, modelValue(a)]))); renderAll();
+      }, { id: "zero-joints" })),
+    t,
+    h("p", { class: "hint", id: "joints-note", title: "How the sliders work" }, "The sliders are in MOTION axis units; the preview applies the formula. Passive (assignKin) joints are solved by the viewer from the kinematic and stay at their initial value here."));
+}
+
+function warningsCard() {
+  const ws = S.view.data.warnings;
+  return h("section", { class: "card", id: "warnings-card" }, h("h2", {}, `Warnings (${ws.length})`),
+    ws.length ? h("ul", { class: "warn-list", id: "warn-list", title: "What may be wrong with this model" },
+      ws.map((w) => h("li", { class: w.level, "data-code": w.code, title: w.text },
+        h("span", { class: "chip " + (w.level === "info" ? "" : "warn"), title: w.level === "info" ? "Information" : "Warning" }, w.level === "info" ? "Info" : "Warning"), h("span", {}, w.text))))
+      : h("p", { class: "hint", id: "warn-none" }, "No warnings."));
+}
+
+function zoneTable(z) {
+  return UI.table([
+    { label: "Check", hint: "What is checked", get: (r) => r.name },
+    { label: "Result", hint: "OK or a warning", get: (r) => h("span", { class: "chip res " + (r.ok ? "ok" : "warn"), title: r.ok ? "Passed" : "Needs attention" }, r.ok ? "OK" : "Warning") },
+    { label: "Note", hint: "Values and what they mean", get: (r) => h("span", {}, r.note, h("br"), h("span", { class: "dim" }, r.value)), cls: "ui-wrap ui-note" },
+  ], z.rows, { cls: "zone-table", id: "zone-table" });
+}
+function viewZoneCard() {
+  const v = S.view, z = v.zone;
+  const sel = h("select", { id: "view-kin", title: "A kinematic from ctrlX MOTION whose first axes the zone check compares with the model (Cartesian kinematics only)", onchange: (e) => { v.kin = e.target.value; } },
+    S.kins.length ? S.kins.map((k) => h("option", { value: k.name, selected: k.name === v.kin }, `${k.name} (${k.type || "?"})`)) : h("option", { value: "" }, S.motionError || "No kinematics found"));
+  const run = () => guard(async () => {
+    if (!v.kin) { banner("Pick a kinematic first"); return; }
+    v.zone = await api("POST", "/viewer/zone", { kinematic: v.kin });
+    renderAll();
+  });
+  let body = null;
+  if (z && !z.checked) body = h("p", { class: "hint", id: "zone-note" }, z.note);
+  else if (z) body = zoneTable(z);
+  return h("section", { class: "card", id: "zone-card" },
+    h("h2", {}, h("span", { class: "grow" }, "Zone check")),
+    h("div", { class: "tools" }, h("span", { class: "lbl" }, "Kinematic"), sel,
+      wide("check", "Check zone", "Compare the model with the selected Cartesian kinematic: where the MCS zone frame sits, with the ExpressionScripts applied", run, { id: "view-zone-check", disabled: !S.kins.length })),
+    body,
+    h("p", { class: "hint", title: "Why there is no Fix here" }, "Result only. The fix is for projects of this app; a viewer project is never changed."));
 }
 
 // ---------------------------------------------------------------- start
@@ -721,6 +999,7 @@ $("file-input").addEventListener("change", (ev) => { const f = ev.target.files[0
     banner(e.message);
     renderAll();
   }
+  loadViewerList();
   every(5000, () => loadList(false));
   every(30000, loadMotion);
 })();

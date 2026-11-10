@@ -85,17 +85,20 @@ export function createPreview(host, { loadMesh, onInfo }) {
       if (n.tag === "transform") {
         const g = new THREE.Group();
         g.name = a.name;
-        const m = new THREE.Matrix4().fromArray(parseNumbers(a.initialvalue)).transpose();
+        const nums = a.initialvalue ? parseNumbers(a.initialvalue) : [];
+        const m = new THREE.Matrix4();
+        if (nums.length === 16 && nums.every(Number.isFinite)) m.fromArray(nums).transpose();
         m.decompose(g.position, g.quaternion, g.scale);
         parent.add(g);
         build(n.children, g, ctx);
       } else if (n.tag === "axis") {
-        const dir = new THREE.Vector3(+a.x, +a.y, +a.z).normalize();
-        const info = { name: a.name, type: a.type, dir, min: +a.minvalue, max: +a.maxvalue, initial: +a.initial_value };
+        const n0 = (v) => (Number.isFinite(+v) ? +v : 0);
+        const dir = new THREE.Vector3(n0(a.x), n0(a.y), n0(a.z)).normalize();
+        const info = { name: a.name, type: a.type, dir, min: n0(a.minvalue), max: n0(a.maxvalue), initial: n0(a.initial_value) };
         const obj = new THREE.Group();
         obj.name = a.name;
         if (a.type === "rotation") {
-          const rz = new THREE.Vector3(+a.rzx, +a.rzy, +a.rzz);
+          const rz = new THREE.Vector3(n0(a.rzx), n0(a.rzy), n0(a.rzz));
           const pivot = new THREE.Group();
           pivot.name = "rzv_" + a.name;
           pivot.position.copy(rz);
@@ -121,9 +124,12 @@ export function createPreview(host, { loadMesh, onInfo }) {
           marker.userData.tool = true;
           parent.add(marker);
           ctx.tools.push(marker);
-        } else {
+        } else if (a.geo) {
+          // alpha is a transparency in the viewer's files (0 = opaque; every example has alpha="0")
+          const alpha = Math.min(0.95, Math.max(0, Number.isFinite(+a.alpha) ? +a.alpha : 0));
           const mesh = new THREE.Mesh(new THREE.BufferGeometry(),
-            new THREE.MeshStandardMaterial({ color: new THREE.Color(+a.clrr, +a.clrg, +a.clrb), metalness: 0.15, roughness: 0.7, side: THREE.DoubleSide, emissive: 0x000000 }));
+            new THREE.MeshStandardMaterial({ color: new THREE.Color(Number.isFinite(+a.clrr) ? +a.clrr : 0.6, Number.isFinite(+a.clrg) ? +a.clrg : 0.6, Number.isFinite(+a.clrb) ? +a.clrb : 0.6),
+              metalness: 0.15, roughness: 0.7, side: THREE.DoubleSide, emissive: 0x000000, transparent: alpha > 0, opacity: 1 - alpha }));
           mesh.name = a.name;
           mesh.userData.file = a.geo;
           parent.add(mesh);

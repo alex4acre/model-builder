@@ -103,11 +103,19 @@ so they survive a round trip unchanged.
   zone-frame rule checked against the Gantry v3 model), UI check with screenshot, then a device test: build a small 2-axis model and watch it follow jogged
   axes.
 
-### Phase 2 (0.2.x): picking and import
+### Phase 2 (0.2.x): view, then picking and import
+- **0.2.0 (done 2026-11-10): view existing viewer projects, read only.** List of the viewer's projects, eye = open into a
+  cache (`$SNAP_COMMON/viewer-cache`, one project at a time, safe extraction: no absolute paths or `..`, only
+  xml/stl/json/png/jpg, 500 MB total); structure tree, details per node, bindings, joints sliders in MOTION units with the
+  linear formula applied (`a*value+b`, never evaluated), warnings (formula not `value`, unbound axis, binding without axis,
+  assignKin passive joint, missing STL, no tool, duplicate axis name), Cartesian zone check against a MOTION kinematic (result
+  only, no Fix). Nothing is written or saved. Tested on Scara Sort, Delta_Ori_Sort and the L10409A_Gantry (original and baked).
+- **Later (0.3.x): editable import.** Importing a viewer project into a project of this app (XML to tree, including nested
+  named transforms, scripts to offset/invert, assignKin joints) with a round-trip test.
 - Pick pivots by clicking the mesh. Snap to vertex, edge midpoint or **circle centre** (a
   circle fitted to a hole or shaft edge loop). Take the direction from a face normal or the
   circle's axis.
-- Import an existing viewer project (GET zip → parse XML → tree). Round-trip test: Scara Sort
+- Import an existing viewer project as an editable project (the read-only view is 0.2.0). Round-trip test: Scara Sort
   and Delta_Ori_Sort come back out with the same structure.
 - Colours and transparency per part.
 
@@ -209,5 +217,13 @@ read. A project is saved at once after every edit; the Save button saves again. 
 The package zip holds `Model.zip` and `<name>.json` (no thumbnail: the viewer's `thumbnail.png` is a data URL text it
 renders itself on first open).
 
+## Decisions made in 0.2.0
+- `alpha` in the viewer XML is read as a transparency (0 = opaque; every example has alpha="0" and is opaque): opacity = 1 - alpha.
+- Slider values are MOTION values; the preview shows each axis at its XML `initial_value` at first (as the viewer starts) and
+  maps back through the formula. Zone check on a viewed model evaluates the XML with every MOTION axis at 0 and the formulas
+  applied (the original Gantry then warns with the shift (2250, 1500, -2000), the baked v3 passes), as in the 0.1.0 test.
+- Bindings: the viewer's own configuration; if it has none, the JSON in the package.
+
 ## Next step
-Device test on the X3 at .22 by the user (build 2 axes, upload, jog), then Phase 2.
+Device test on the X3 at .22 by the user (build 2 axes, upload, jog); 0.2.0 view-only to be tried against real viewer projects
+(amd64 build for the X7), then the editable import.

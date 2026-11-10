@@ -32,6 +32,13 @@ def get(path):
         return json.loads(r.read())
 
 
+def hint_check(where):
+    missing = b.js("""return [...document.querySelectorAll('button, input, select, textarea, .chip, th, canvas')]
+        .filter(e => e.offsetParent !== null && !e.closest('[title]') && e.type !== 'hidden')
+        .map(e => e.tagName + '#' + e.id + '.' + e.className + ' ' + (e.textContent || '').slice(0, 20))""")
+    b.check(not missing, f"every visible button, field, header and status has a hint ({where}) " + (str(missing) if missing else ""))
+
+
 b = Browser(screenshots=sys.argv[1] if len(sys.argv) > 1 else None, width=1600, height=950)
 try:
     b.open(URL + "?token=dev")
@@ -116,12 +123,68 @@ try:
 
     b.js("window.__mb.preview.fit()")
     b.shot("main")
+    hint_check("editor")
 
-    # every visible control has a hover hint
-    missing = b.js("""return [...document.querySelectorAll('button, input, select, textarea, .chip, th, canvas')]
-        .filter(e => e.offsetParent !== null && !e.closest('[title]') && e.type !== 'hidden')
-        .map(e => e.tagName + '#' + e.id + '.' + e.className + ' ' + (e.textContent || '').slice(0, 20))""")
-    b.check(not missing, "every visible button, field, header and status has a hint " + (str(missing) if missing else ""))
+    # ---- read-only view of 3D viewer projects ----
+    b.check(b.until("document.querySelectorAll('#viewer-table tbody tr[data-key]').length >= 2"), "the 3D viewer projects are listed")
+    names = b.js("return [...document.querySelectorAll('#viewer-table tbody tr[data-key]')].map(r => r.dataset.key)")
+    b.check("Demo Gantry" in names and "Demo Delta" in names, "the list has the demo gantry and the demo delta " + str(names))
+    b.check(b.js("return document.querySelector('#viewer-refresh').title.length > 0"), "the refresh button has a hint")
+    b.js("document.querySelector('.view-open[data-name=\"Demo Gantry\"]').click()")
+    b.check(b.until("$('readonly-bar') && !$('readonly-bar').hidden && $('readonly-text').textContent === 'Read only: Demo Gantry from the 3D viewer. Nothing is changed.'", 15),
+            "the read-only banner is shown")
+    b.check(b.js("return $('close-view') !== null"), "the banner has a close button")
+    b.check(b.js("return ['save', 'download-zip', 'upload-viewer', 'new-project'].every(id => $(id).disabled)"), "save, download, upload and new project are disabled")
+    b.check(b.js("return !$('tree-tools') && !$('upload-mesh') && !$('add-part') && !$('meshes-card') && !$('zone-fix')"), "no editing controls in the read-only view")
+    b.check(b.until("window.__mb.preview.info().parts === 6 && window.__mb.preview.info().loaded === 6", 20), "the preview loaded all 6 meshes (Beam.STL found as beam.stl)")
+    b.check(b.js("return window.__mb.preview.info().tools.length === 1 && Math.abs(window.__mb.preview.info().tools[0][0] - 2490) < 1"), "the model starts at its initial values (tool at x 2490)")
+    # structure tree
+    b.check(b.js("return document.querySelectorAll('#view-tree .ui-node').length") >= 14, "the structure tree lists transforms, axes, parts and the tool")
+    b.check(b.js("return [...document.querySelectorAll('#view-tree .ui-label')].map(e => e.textContent).includes('ToolTransform')"), "nested named transforms are in the tree")
+    def pick(label):
+        b.js("[...document.querySelectorAll('#view-tree .ui-node')].find(n => n.querySelector('.ui-label').textContent === arguments[0]).click()", label)
+    pick("X")
+    b.check(b.until("$('props-card').textContent.includes('Translation axis X') && $('props-card').textContent.includes('2250 - value') && $('props-card').textContent.includes('model = -1 × value + 2250')"), "axis details show type, binding, formula")
+    pick("ToolTransform")
+    b.check(b.until("$('props-card').textContent.includes('Position (x, y, z) mm') && $('props-card').textContent.includes('240, 0, 150') && $('props-card').textContent.includes('Raw initialvalue')"), "transform details: position, rotation, raw matrix")
+    pick("XBeam")
+    b.check(b.until("$('props-card').textContent.includes('Beam.STL') && $('props-card').textContent.includes('Found as beam.stl') && $('props-card').textContent.includes('Colour')"), "part details: file (case differs), colour")
+    pick("Tool")
+    b.check(b.until("$('props-card').textContent.includes('Tool Tool')"), "tool details")
+    # bindings
+    b.check(b.js("return document.querySelectorAll('#bindings-table tbody tr[data-key]').length") == 5, "bindings table: one row per model axis")
+    b.check(b.js("return $('bindings-table').textContent.includes('2250 - value') && $('bindings-table').textContent.includes('AxisX') && $('bindings-table').textContent.includes('Not bound')"), "bindings show MOTION axis, formula and the unbound axis")
+    # joints: slider in MOTION units, the formula is applied
+    b.check(b.js("return $('joints-table').textContent.includes('model = 2250 - value')"), "the formula is shown next to the joint")
+    b.js("const n = document.querySelector('#joints-table input[type=number]'); n.value = '250'; n.dispatchEvent(new Event('input', {bubbles: true}))")
+    b.check(b.until("Math.abs(window.__mb.preview.info().tools[0][0] - 2240) < 1"), "MOTION value 250 with 2250 - value moves the tool from x 2490 to 2240")
+    b.check(b.js("return document.querySelector('#joints-table .joint-model').textContent") == "2000", "the model value shown is 2000")
+    b.js("const r = document.querySelectorAll('#joints-table input[type=range]')[1]; r.value = '300'; r.dispatchEvent(new Event('input', {bubbles: true}))")
+    b.check(b.until("Math.abs(window.__mb.preview.info().tools[0][1] - 300) < 1"), "the Y slider moves the tool in Y")
+    # warnings
+    codes = b.js("return [...document.querySelectorAll('#warn-list li')].map(l => l.dataset.code)")
+    b.check("expression" in codes and "unbound" in codes, "warnings list the formula and the unbound axis " + str(codes))
+    b.check(b.js("return $('warnings-card').textContent.includes('Camera_Z') && $('warnings-card').textContent.includes('ExpressionScript')"), "the warnings name the axis and the script")
+    # zone check: result only
+    b.check(b.until("[...$('view-kin').options].some(o => o.value === 'Gantry')"), "kinematics offered for the zone check")
+    b.js("$('view-kin').value = 'Gantry'; $('view-kin').dispatchEvent(new Event('change'))")
+    b.click("#view-zone-check")
+    b.check(b.until("$('zone-table') !== null && $('zone-chip').textContent === 'Zone: warning'"), "zone check result: warning (the tool is not at the parent of X with the formulas applied)")
+    b.check(b.js("return $('zone-fix') === null"), "no Fix in the read-only view")
+    b.js("window.__mb.preview.fit()")
+    b.shot("readonly")
+    hint_check("read-only view")
+    # a delta: passive joint
+    b.js("document.querySelector('.view-open[data-name=\"Demo Delta\"]').click()")
+    b.check(b.until("$('readonly-text') && $('readonly-text').textContent.includes('Demo Delta') && $('warn-list') !== null", 15), "opened the demo delta")
+    b.check(b.js("return [...document.querySelectorAll('#warn-list li')].some(l => l.dataset.code === 'assignkin')"), "assignKin warning for the passive joint")
+    b.check(b.js("return document.querySelectorAll('#joints-table input[type=range]:disabled').length") == 1, "the passive joint's slider is disabled")
+    b.check(b.js("return $('joints-table').textContent.includes('passive')"), "the passive joint carries a note")
+    b.check(b.until("window.__mb.preview.info().loaded === window.__mb.preview.info().parts && window.__mb.preview.info().parts === 4", 15), "delta meshes loaded")
+    # close: back to the editor with the project that was open
+    b.click("#close-view")
+    b.check(b.until("$('readonly-bar').hidden && $('project-chip').textContent.startsWith('UiGantry') && $('tree-box') !== null"), "closing the view returns to the editor (UiGantry)")
+    b.check(b.until("window.__mb.preview.info().loaded === 1 && !$('save').disabled"), "the editor's preview and buttons are back")
     errors = b.js("return window.__errors")
     b.check(not errors, "no console errors " + (str(errors) if errors else ""))
 finally:

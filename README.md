@@ -7,6 +7,7 @@ A ctrlX CORE app (snap, core24, Python 3.12 in the snap), made from ctrlx-baseli
 - **Web UI / REST:** `https://<ctrlx>/model-builder` (sidebar entry "3D Model Builder"); REST under `/model-builder/api/v1`, protected by the ctrlX proxy (bearer token).
 - **Projects:** a folder `<root>/<name>/` with `project.json` and `meshes/*.stl`; root = `model-builder/projects` in the app data of the active configuration (in ctrlX backups) or `$SNAP_COMMON/projects` (not in backups), chosen per project.
 - **Data Layer:** `model-builder/state` (JSON string: number of projects).
+- **View existing viewer projects (0.2.0, read only):** the left column lists the 3D viewer app's projects; the eye opens one read-only (download of the zip + configuration into `$SNAP_COMMON/viewer-cache/<name>/`, one project at a time). The page shows the model with the XML colours, the structure tree, a details table per node, the bindings (model axis, MOTION axis, formula, status), joints sliders in MOTION units (the preview applies simple linear formulas `a*value+b`; passive `assignKin` joints are disabled), warnings and the Cartesian zone check against a MOTION kinematic. Nothing is written to the viewer or saved; editing an imported project is a later version. REST: `GET /viewer/projects`, `POST /viewer/projects/<name>/open`, `GET /viewer/cache/<file>` (case-insensitive), `POST /viewer/zone`.
 - **3D viewer:** uploads go to the 3D viewer app's REST API with the caller's token; its axis bindings are always sent again after an upload.
 
 ## Layout
@@ -18,6 +19,7 @@ A ctrlX CORE app (snap, core24, Python 3.12 in the snap), made from ctrlx-baseli
 | `app/core.py` | generated model, zone check, upload to the 3D viewer |
 | `app/storage.py`, `app/project.py` | project folders (two roots, unique names) and the project document (validation) |
 | `app/xmlgen.py`, `app/xmleval.py`, `app/zone.py` | machine_definition XML, forward kinematics of it, Cartesian zone check |
+| `app/viewcache.py`, `app/viewanalysis.py`, `app/demos.py` | read-only view: safe zip extraction + cache, structure/axes/warnings/formula parser/zone check of a viewer project, demo viewer projects for the fake backend (and the shared-folder examples when readable) |
 | `app/motion.py`, `app/viewer.py` | MOTION reads (axes, kinematics), 3D viewer client |
 | `app/provider.py` | the app's own Data Layer nodes |
 | `app/fake.py` | the simulated ctrlX: MOTION axes, kinematics Gantry and Scara, a demo STL |
