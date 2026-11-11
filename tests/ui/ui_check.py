@@ -119,7 +119,7 @@ try:
     b.check(b.until("$('banner').textContent.includes('Uploaded to the 3D viewer') && $('banner').textContent.includes('3 axes bound')"), "upload to the viewer: 3 axes bound")
     b.js("window.__confirms.length = 0")
     b.click("#upload-viewer")
-    b.check(b.until("window.__confirms.length === 1 && window.__confirms[0] === 'Replaces UiGantry in the 3D viewer: its files are replaced, the axis bindings are sent again and the library picture is redrawn.'"), "re-upload asks before replacing, with the agreed text")
+    b.check(b.until("window.__confirms.length === 1 && window.__confirms[0] === 'Replaces UiGantry in the 3D viewer: its files are replaced. The viewer\\'s own bindings (Data Layer values on axes this app leaves unbound) and its visual effects, safe zones and other settings are kept; the axes bound here are sent again and the library picture is redrawn.'"), "re-upload asks before replacing, with the agreed text")
     b.check(b.until("$('banner').textContent.includes('(replaced)')"), "re-upload done after the confirmation")
 
     # move to the other location and rename
@@ -323,7 +323,7 @@ try:
     # upload back: confirmation, bindings sent again
     b.js("window.__confirms.length = 0")
     b.click("#upload-viewer")
-    b.check(b.until("window.__confirms.length === 1 && window.__confirms[0] === 'Replaces Demo Gantry in the 3D viewer: its files are replaced, the axis bindings are sent again and the library picture is redrawn.'", 12), "uploading back asks with the agreed text")
+    b.check(b.until("window.__confirms.length === 1 && window.__confirms[0] === 'Replaces Demo Gantry in the 3D viewer: its files are replaced. The viewer\\'s own bindings (Data Layer values on axes this app leaves unbound) and its visual effects, safe zones and other settings are kept; the axes bound here are sent again and the library picture is redrawn.'", 12), "uploading back asks with the agreed text")
     b.check(b.until("$('banner').textContent.includes('Uploaded to the 3D viewer as Demo Gantry') && $('banner').textContent.includes('(replaced)') && $('banner').textContent.includes('4 axes bound')"), "uploaded back to the same viewer project, 4 bindings sent")
     again = send("POST", "/viewer/projects/Demo%20Gantry/open", {})
     xs = [a for a in again["axes"] if a["name"] == "X"][0]
@@ -434,6 +434,7 @@ try:
     b.check(near([m[3], m[7], m[11]], [10, -20, -10]), f"the part's matrix holds the dragged, 10 mm snapped place in the frame's own coordinates (world 120, 10, -10) {m[3], m[7], m[11]}")
     b.check(near([m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]], [1, 0, 0, 0, 1, 0, 0, 0, 1]), "its rotation did not change")
     b.check(b.js("return Object.values(window.__mb.S.values).every(v => !v)"), "the joint values were set to the zero pose for the drag")
+    b.until("!$('undo').disabled")
     b.check(b.js("return !$('undo').disabled && $('redo').disabled && $('save-chip').textContent.startsWith('Saved')"), "undo is enabled, redo is not; the project is saved " + str(b.js("return [$('undo').disabled, $('redo').disabled, $('save-chip').textContent, window.__mb.H.undo.length, window.__mb.H.redo.length, $('banner').textContent]")))
     b.click("#undo")
     b.check(b.until("window.__mb.H.undo.length === 0 && window.__mb.H.redo.length === 1"), "undo moves the step to the redo stack")
@@ -609,6 +610,82 @@ try:
     b.js("window.__mb.preview.setValues({})")
     b.shot("drag-toolbar")
     hint_check("editor with the drag toolbar")
+
+
+    # ---- 0.5.0: Display ID, always visible, Hide housing, viewer settings kept on re-upload ----
+    send("POST", "/projects", {"name": "UiVis", "location": "common"})
+    req = urllib.request.Request(URL + "api/v1/projects/UiVis/meshes/cube.stl?unit=mm", data=demo_stl(), method="PUT",
+                                 headers={"Authorization": "Bearer dev", "Content-Type": "application/octet-stream"})
+    opener.open(req, timeout=20).read()
+    doc = send("GET", "/projects/UiVis")
+    mv = lambda x: [1, 0, 0, x, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+    doc["tree"] = [
+        {"kind": "frame", "id": "vf", "name": "Group", "matrix": mv(0), "children": [
+            {"kind": "part", "id": "v1", "name": "Housing", "mesh": "cube", "colour": [0.6, 0.6, 0.6], "matrix": mv(0)},
+            {"kind": "part", "id": "v2", "name": "Cover", "mesh": "cube", "colour": [0.6, 0.6, 0.6], "matrix": mv(300)}]},
+        {"kind": "part", "id": "v3", "name": "Inactive_Plate", "mesh": "cube", "colour": [0.6, 0.6, 0.6], "matrix": mv(-300)},
+        {"kind": "axis", "id": "va1", "name": "VA1", "type": "translation", "direction": [1, 0, 0], "binding": "AxisX", "children": []},
+        {"kind": "axis", "id": "va2", "name": "VA2", "type": "translation", "direction": [0, 1, 0], "children": []}]
+    send("PUT", "/projects/UiVis", doc)
+    b.check(b.until("[...document.querySelectorAll('#projects-table tr[data-key]')].some(r => r.dataset.key === 'UiVis')", 12), "the 0.5.0 test project is listed")
+    b.js("document.querySelector('#projects-table tr[data-key=\"UiVis\"]').click()")
+    b.check(b.until("$('project-chip').textContent.startsWith('UiVis') && window.__mb.preview.info().loaded === 3", 15), "the 0.5.0 test project is open")
+    sel_node("Housing")
+    rows = lambda: b.js("return [...document.querySelectorAll('#props-card .ui-settings tr, #props-card tr')].map(r => r.cells && r.cells[0] ? r.cells[0].textContent.trim() : '')")
+    b.check("Display ID" in rows() and "Always visible" in rows(), "a part has the rows Display ID and Always visible")
+    b.js("window.__mb.S.project.tree[0].children[0]") 
+    # Display ID: type into the field
+    b.js("""const tr = [...document.querySelectorAll('#props-card tr')].find(r => r.cells[0] && r.cells[0].textContent.trim() === 'Display ID');
+           window.__field = tr.querySelector('input, .ui-edit');""")
+    b.check(b.js("return !!window.__field"), "the Display ID row has an edit field")
+    b.js("""const el = window.__field; const input = el.tagName === 'INPUT' ? el : el.querySelector('input'); if (input) { input.focus(); input.value = 'Hs'; input.dispatchEvent(new Event('input', {bubbles: true})); input.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true})); }""")
+    b.check(b.until("window.__mb.S.project.tree[0].children[0].display_id === 'Hs'", 8), "Display ID saved on the part")
+    xml = get("/projects/UiVis/xml") if False else None
+    import urllib.request as _u
+    xml_text = opener.open(_u.Request(URL + "api/v1/projects/UiVis/xml", headers={"Authorization": "Bearer dev"}), timeout=10).read().decode()
+    b.check('name="Housing"' in xml_text and 'customdata="displayid(Hs)"' in xml_text, "the XML has customdata=displayid(Hs) on the part")
+    # the frame: same id on Cover through the API, then the preview highlights siblings
+    d = send("GET", "/projects/UiVis")
+    d["tree"][0]["children"][1]["display_id"] = "Hs"
+    send("PUT", "/projects/UiVis", d)
+    b.js("window.__mb.preview.select(null)")
+    b.js("document.querySelector('#projects-table tr[data-key=\"UiDrag\"]').click()")
+    b.check(b.until("$('project-chip').textContent.startsWith('UiDrag')"), "other project opened")
+    b.js("document.querySelector('#projects-table tr[data-key=\"UiVis\"]').click()")
+    b.check(b.until("$('project-chip').textContent.startsWith('UiVis') && window.__mb.preview.info().loaded === 3", 15), "0.5.0 project reopened with both IDs")
+    sel_node("Housing")
+    b.check(b.until("window.__mb.preview.info().highlighted === 2 && window.__mb.preview.info().lightHighlighted === 1"), "parts with the same Display ID get a lighter highlight")
+    # always visible by name
+    b.js("""const tr = [...document.querySelectorAll('#props-card tr')].find(r => r.cells[0] && r.cells[0].textContent.trim() === 'Always visible'); const sel = tr.querySelector('select'); sel.value = 'true'; sel.dispatchEvent(new Event('change', {bubbles: true}));""")
+    b.check(b.until("window.__mb.S.project.tree[0].children[0].name === 'Housing_alwaysvisible'", 8), "checking Always visible appends _alwaysvisible to the name")
+    b.check(b.js("return window.__mb.S.project.tree[0].children[0].name") == "Housing_alwaysvisible", "name is Housing_alwaysvisible")
+    # Hide housing in the preview
+    b.check(b.js("return window.__mb.preview.info().visibleParts") == 3, "all 3 parts visible before Hide housing")
+    b.click("#hide-housing")
+    b.check(b.until("window.__mb.preview.info().visibleParts === 2 && window.__mb.preview.info().hideHousing"), "Hide housing hides Cover; Housing_alwaysvisible and Inactive_Plate (contains 'active') stay")
+    b.shot("hide-housing")
+    b.click("#hide-housing")
+    b.check(b.until("window.__mb.preview.info().visibleParts === 3"), "Hide housing off shows everything again")
+    sel_node("Inactive_Plate")
+    b.check(b.js("const t = [...document.querySelectorAll('#props-card tr')].find(r => r.cells[0] && r.cells[0].textContent.trim() === 'Always visible'); return t.querySelector('select').value === 'true'"), "a name containing 'active' counts as checked")
+    # viewer settings are kept on re-upload
+    sel_node("VA2")
+    b.check(b.js("return document.querySelector('#props-card').textContent.includes('bind it in the 3D viewer')"), "an unbound axis says it can be bound in the 3D viewer")
+    b.click("#upload-viewer")
+    b.check(b.until("$('banner').textContent.includes('Uploaded to the 3D viewer') && $('banner').textContent.includes('1 axes bound')"), "first upload of UiVis")
+    inj = {"ConfiguredAxis": [{"ModelAxisName": "VA1", "ConnectionType": "datalayerAxes", "DatalayerNode": "AxisX", "ExpressionScript": "value"},
+                              {"ModelAxisName": "VA2", "ConnectionType": "datalayerVariable", "DatalayerNode": "", "DatalayerVariable": "plc/app/Application/sym/PLC_PRG/pos", "ExpressionScript": "value"}],
+           "GeometryProperties": [{"displayId": "Hs"}], "TrackId": "x"}
+    send("PUT", "/viewer/fake/UiVis/configuration", inj)
+    b.click("#upload-viewer")
+    b.check(b.until("$('banner').textContent.includes('(replaced)') && $('banner').textContent.includes('Kept from the viewer: 1 binding (VA2)')"), "re-upload reports the kept viewer binding: " + b.text("#banner"))
+    st = send("GET" , "/projects/UiVis/viewer-state") if False else get("/projects/UiVis/viewer-state")
+    b.check("VA2" in st["bindings"] and st["bindings"]["VA2"]["variable"].endswith("PLC_PRG/pos"), "the viewer's Data Layer binding of VA2 survived the upload")
+    b.check(b.until("document.querySelector('#props-card') !== null"), "page still fine")
+    sel_node("VA2")
+    b.check(b.until("document.querySelector('#props-card').textContent.includes('The viewer currently has: Data Layer value')"), "the axis shows what the viewer has for it (read only)")
+    b.shot("viewer-kept")
+    hint_check("0.5.0 rows and Hide housing")
 
     errors = b.js("return window.__errors")
     b.check(not errors, "no console errors " + (str(errors) if errors else ""))

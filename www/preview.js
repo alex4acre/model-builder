@@ -29,6 +29,16 @@ export function parseMachineXml(text) {
   return [...doc.documentElement.children].filter((c) => ["transform", "axis", "geometry"].includes(c.tagName)).map(read);
 }
 
+// Display IDs of a customdata text (viewer 4.6.2: entries split on ",;", each trimmed, displayid( <id> ), case-insensitive)
+const DISPLAY_ID = /^displayid *\( *([\w#-]+) *\)$/i;
+export function displayIds(text) {
+  const out = [];
+  for (const e of String(text || "").trim().split(",;")) { const m = DISPLAY_ID.exec(e.trim()); if (m) out.push(m[1]); }
+  return out;
+}
+// "Hide housing" of the viewer: a geometry stays visible when its name (lower case) contains "active" or "alwaysvisible"
+export const staysVisible = (name) => /active|alwaysvisible/i.test(String(name || ""));
+
 // Three's column-major elements -> the row-major lists of xform.js
 const rowMajor = (m4) => m4.clone().transpose().elements.slice();
 
@@ -61,6 +71,7 @@ export function createPreview(host, { loadMesh, onInfo, onPick, onCommit, before
   let values = {};
   let selected = { axis: null, part: null };
   let dragPivot = null;                       // world point of the pivot while it is dragged (the arrow follows)
+  let hideHousing = false;
   let raf = 0, token = 0, sceneSize = 1000, arrow = null, fitted = false, loading = 0;
 
   function invalidate() {
@@ -88,9 +99,12 @@ export function createPreview(host, { loadMesh, onInfo, onPick, onCommit, before
   }
 
   // ---- XML -> scene ----
-  function build(nodes, parent, ctx) {
+  // cd = customdata of the element the nodes sit in. Viewer rule: a transform takes over the customdata of its parent transform or
+  // axis when that has one (the parent wins); a geometry has [customdata of the element it sits in, its own].
+  function build(nodes, parent, ctx, cd = "") {
     for (const n of nodes) {
       const a = n.attrs;
+      const own = a.customdata || "";
       if (n.tag === "transform") {
         const g = new THREE.Group();
         g.name = a.name;
@@ -100,7 +114,7 @@ export function createPreview(host, { loadMesh, onInfo, onPick, onCommit, before
         if (nums.length === 16 && nums.every(Number.isFinite)) m.fromArray(nums).transpose();
         m.decompose(g.position, g.quaternion, g.scale);
         parent.add(g);
-        build(n.children, g, ctx);
+        build(n.children, g, ctx, cd || own);
       } else if (n.tag === "axis") {
         const n0 = (v) => (Number.isFinite(+v) ? +v : 0);
         const dir = new THREE.Vector3(n0(a.x), n0(a.y), n0(a.z)).normalize();
@@ -121,7 +135,7 @@ export function createPreview(host, { loadMesh, onInfo, onPick, onCommit, before
           Object.assign(info, { obj, pivot: null });
         }
         ctx.axes[a.name] = info;
-        build(n.children, obj, ctx);
+        build(n.children, obj, ctx, own);
       } else if (n.tag === "geometry") {
         if (a.objtype === "tool") {
           const marker = new THREE.Group();
@@ -142,6 +156,8 @@ export function createPreview(host, { loadMesh, onInfo, onPick, onCommit, before
               metalness: 0.15, roughness: 0.7, side: THREE.DoubleSide, emissive: 0x000000, transparent: alpha > 0, opacity: 1 - alpha }));
           mesh.name = a.name;
           mesh.userData.file = a.geo;
+          mesh.userData.ids = [...new Set(displayIds(cd).concat(displayIds(own)))];
+          mesh.visible = !hideHousing || staysVisible(a.name);
           parent.add(mesh);
           ctx.parts.push(mesh);
           ctx.pending.push(loadMesh(a.geo).then((geo) => { if (ctx.token === token) { mesh.geometry = geo; invalidate(); } }, (e) => { ctx.errors.push(`${a.geo}: ${e.message}`); }));
@@ -203,10 +219,19 @@ export function createPreview(host, { loadMesh, onInfo, onPick, onCommit, before
     const moving = new Set();
     const a = selected.axis && axes[selected.axis];
     if (a) a.obj.traverse((c) => { if (c.isMesh && c.userData.file) moving.add(c); });
+    // parts that share a Display ID with the selected part: lighter highlight
+    const ids = new Set();
+    if (selected.part) for (const m of parts) if (m.name === selected.part) for (const id of m.userData.ids || []) ids.add(id);
     for (const m of parts) {
       const on = moving.has(m) || (selected.part && m.name === selected.part);
-      m.material.emissive.setHex(on ? 0x6a3a00 : 0x000000);
+      const sib = !on && ids.size && (m.userData.ids || []).some((id) => ids.has(id));
+      m.material.emissive.setHex(on ? 0x6a3a00 : sib ? 0x2e1a00 : 0x000000);
     }
+  }
+  function setHideHousing(on) {
+    hideHousing = !!on;
+    for (const m of parts) m.visible = !hideHousing || staysVisible(m.name);
+    invalidate();
   }
   function bounds() {
     content.updateMatrixWorld(true);
@@ -317,7 +342,7 @@ export function createPreview(host, { loadMesh, onInfo, onPick, onCommit, before
     const r = dom.getBoundingClientRect();
     ray.setFromCamera(new THREE.Vector2(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1), camera);
     content.updateMatrixWorld(true);
-    const list = parts.filter((m) => m.geometry.attributes.position);
+    const list = parts.filter((m) => m.visible && m.geometry.attributes.position);
     for (const t of tools) t.traverse((c) => { if (c.isMesh) list.push(c); });
     const hit = ray.intersectObjects(list, false)[0];
     if (!hit) return null;
@@ -495,11 +520,14 @@ export function createPreview(host, { loadMesh, onInfo, onPick, onCommit, before
       return { attached: !!tgt && !!gizmo.object, kind: edit && edit.kind, name: edit && edit.name, mode: gizmo.mode, space: gizmo.space,
                translationSnap: gizmo.translationSnap, rotationSnap: gizmo.rotationSnap, position: proxy.position.toArray(), dragging: gizmo.dragging };
     },
+    setHideHousing,
     // for tests and the status line
     info() {
       content.updateMatrixWorld(true);
       return { axes: Object.keys(axes), parts: parts.length, loaded: parts.filter((m) => m.geometry.attributes.position).length,
                tools: tools.map((t) => t.getWorldPosition(new THREE.Vector3()).toArray()), highlighted: parts.filter((m) => m.material.emissive.getHex() !== 0).length,
+               lightHighlighted: parts.filter((m) => m.material.emissive.getHex() === 0x2e1a00).length, visibleParts: parts.filter((m) => m.visible).length,
+               hideHousing,
                arrow: !!arrow };
     },
     axisWorld(name) {

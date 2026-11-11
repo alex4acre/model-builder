@@ -326,3 +326,20 @@ Tests: `tests/test_xform.py` (Python mirror of xform.js proven against the XML g
 axis offset, inch/m meshes), `tests/ui/ui_check.py` (click pick, hook drags through the real save path, snapping, undo/redo, keys).
 The UI check drags through `preview.testDrag(...)`, which emulates TransformControls' snapping and goes through the same
 `dragging-changed` events; a real pointer drag on the gizmo handles was not automated.
+
+## 0.5.0 (2026-11-11; user go: keep the viewer's settings on re-upload, Display ID, always visible)
+Facts read from the 3D Viewer 4.6.2 client code (not device-tested): customdata is split on ",;", entries trimmed and matched
+against `displayid( <id> )` ([\w#-]+) and `visible( always|active )`. A geometry's customdata list is [customdata of the transform/axis
+it sits directly in, its own]; each distinct string is one group (so a part is in both its frame's and its own group). A transform
+takes over its parent transform's or axis' customdata when that has one (parent wins), an axis never takes its parent's: the ID of a
+frame therefore reaches parts in it and in sub-frames, not beyond an axis. "Hide housing" hides geometries (objtype geometry only, not
+tool/stock) whose lower-case name has neither "active" nor "alwaysvisible" ("inactive" counts), unless under a connected bound axis.
+ConnectionType values: datalayerAxes, datalayerVariable, door, empty.
+Built: `app/merge.py` (merge rule, see README), `core.upload` reads the viewer configuration first and stores `extra.sent_bindings[viewer
+name][axis]`; result lists kept/cleared/dropped bindings and kept settings; `app/customdata.py` (Display ID parse/compose, other entries
+kept in place in the stored `xattrs.customdata`, project node field `display_id` for parts and frames); preview Hide housing (the online
+connected-axis exception is not applied) and sibling highlight; fake viewer `fail_configuration`, dev-only `PUT /viewer/fake/<name>/configuration`.
+Decisions: ToolNodes come from the viewer when it has them (only ConfiguredAxis is app-owned); app orphan bindings are not re-sent when
+the viewer exists (the viewer's entries are authoritative); a project uploaded before 0.5.0 has no record of what was sent, so its
+unbound-axis entries are kept once. Always visible is a Yes/No select (the framework field), not a checkbox. A customdata on the
+wrapper transform of an imported part is not parsed into the part's Display ID.

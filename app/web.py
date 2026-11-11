@@ -9,6 +9,7 @@ reuses connections); a body no handler wanted is drained in chunks."""
 import app
 from app.core import error_types
 from app.framework.web import ApiHandler, HttpError
+from app.viewer import FakeViewer
 
 core = None          # set by main
 
@@ -47,6 +48,7 @@ class RequestHandler(ApiHandler):
         ("POST", r"/projects/([^/]+)/from-kinematic", "from_kinematic"),
         ("POST", r"/projects/([^/]+)/upload-to-viewer", "upload_to_viewer"),
         ("GET", r"/projects/([^/]+)/viewer-state", "viewer_state"),
+        ("PUT", r"/viewer/fake/([^/]+)/configuration", "fake_viewer_configuration"),
         ("GET", r"/viewer/projects", "viewer_projects"),
         ("POST", r"/viewer/projects/([^/]+)/open", "viewer_open"),
         ("POST", r"/viewer/projects/([^/]+)/import", "viewer_import"),
@@ -170,6 +172,15 @@ class RequestHandler(ApiHandler):
         self.send_json(200, core.upload(name, self.token(), replace, as_name))
 
     # --- 3D viewer projects, read-only ------------------------------------------------------------
+
+    def fake_viewer_configuration(self, name):
+        """Development and UI checks only: sets the configuration of a project in the SIMULATED viewer (what a user would do in
+        the real viewer). 404 with the real viewer."""
+        viewer = core.viewer_factory(self.token())
+        if not isinstance(viewer, FakeViewer):
+            raise HttpError(404, "Not available")
+        viewer.configure(name, self.read_json())
+        self.send_json(200, {"ok": True})
 
     def viewer_state(self, name):
         self.send_json(200, core.viewer_state(name, self.token()))

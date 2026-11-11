@@ -123,6 +123,7 @@ const E = {
   move: SNAP_MOVE.includes(+localGet("snapMove")) ? +localGet("snapMove") : 10,
   rot: SNAP_ROT.includes(+localGet("snapRot")) ? +localGet("snapRot") : 15,
   space: localGet("space") === "local" ? "local" : "world",
+  hide: false,                       // Hide housing in the preview (not remembered)
 };
 const fmt = (n) => String(+Number(n).toFixed(4));
 const vecText = (v) => (v || []).map(fmt).join(", ");
@@ -257,8 +258,10 @@ async function openProject(name, keepSelection) {
   S.openedGeneration = S.generation;
   localSet("last", name);
   S.sizes = (await api("GET", `/projects/${enc(name)}/meshes`)).sizes;
+  S.vstate = {};
   await refreshModel();
   renderAll();
+  loadViewerState();
 }
 function localSet(k, v) { try { localStorage.setItem("model-builder." + k, v); } catch (e) { /* not remembered */ } }
 function localGet(k) { try { return localStorage.getItem("model-builder." + k) || ""; } catch (e) { return ""; } }
@@ -578,8 +581,8 @@ function treeCard() {
 // ---------------------------------------------------------------- the right column
 function bindingSelect(n) {
   const names = S.axes.map((a) => a.name);
-  const sel = h("select", { class: "ui-edit", id: "binding-select", title: "The ctrlX MOTION axis this model axis follows (read from motion/axs with your token)" },
-    h("option", { value: "" }, "(not bound)"),
+  const sel = h("select", { class: "ui-edit", id: "binding-select", title: "The ctrlX MOTION axis this model axis follows (read from motion/axs with your token). Not bound here = bindable in the 3D viewer to a MOTION axis or any Data Layer value; that binding survives uploads from this app" },
+    h("option", { value: "" }, "(not bound - bind in the 3D viewer)"),
     (n.binding && !names.includes(n.binding) ? [n.binding] : []).concat(names).map((a) => h("option", { value: a }, a + (names.includes(a) ? "" : " (not found in MOTION)"))));
   sel.value = n.binding || "";
   sel.addEventListener("change", () => guard(() => mutate((d) => { locate(d.tree, n.id).node.binding = sel.value; })));
@@ -653,7 +656,7 @@ function formulaNote(n) {
     + (odd ? " The viewer ignores it for the MCS zones, see the zone check." : "");
 }
 function keptText(n) {
-  const parts = Object.entries(n.xattrs || {}).map(([k, v]) => `${k}="${v}"`);
+  const parts = Object.entries(n.xattrs || {}).filter(([k]) => !(k === "customdata" && (n.kind === "part" || n.kind === "frame"))).map(([k, v]) => `${k}="${v}"`);
   if (n.tattrs) for (const [k, v] of Object.entries(n.tattrs)) parts.push(`transform ${k}="${v}"`);
   if (n.xml_extra && n.xml_extra.length) parts.push(`${n.xml_extra.length} unknown XML element(s)`);
   return parts.join("; ");
@@ -673,6 +676,63 @@ function matrixRows(n) {
   return rows;
 }
 
+// ---- Display ID and "always visible" (0.5.0). The 3D viewer's "Hide housing" keeps a geometry visible when its lower-case name
+// contains "active" or "alwaysvisible" ("inactive" counts); so "always visible" is a name rule here too.
+const STAYS_VISIBLE = /active|alwaysvisible/i;
+const VIS_SUFFIX = /_(alwaysvisible\d*|active)$/i;
+function freeName(d, id, base) {
+  const names = new Set([...walk(d.tree)].filter(([m]) => m.id !== id).map(([m]) => m.name));
+  let nm = base, i = 2;
+  while (names.has(nm)) nm = base + i++;
+  return nm;
+}
+function setAlwaysVisible(x, on, d) {
+  if (on) { if (!STAYS_VISIBLE.test(x.name)) x.name = freeName(d, x.id, x.name + "_alwaysvisible"); }
+  else {
+    const base = x.name.replace(VIS_SUFFIX, "");
+    if (base && base !== x.name) x.name = freeName(d, x.id, base);
+  }
+}
+function alwaysVisibleField(n) {
+  const f = UI.field(STAYS_VISIBLE.test(n.name), async (text) => {
+    await mutate((d) => setAlwaysVisible(locate(d.tree, n.id).node, text === "true", d));
+    const now = nodeById(n.id);
+    if (text !== "true" && now && STAYS_VISIBLE.test(now.name))
+      banner(`"${now.name}" still contains "active" (for example "inactive" counts), so the viewer keeps it visible. Rename the part to change that.`, true);
+  }, { hint: "Visible when the 3D viewer's Hide housing is on. Done by name: the name must contain \"alwaysvisible\" or \"active\" (any case). Checking appends _alwaysvisible to the name; unchecking removes a trailing _alwaysvisible or _active" });
+  return f;
+}
+function displayIdRows(n) {
+  const raw = (n.xattrs && n.xattrs.customdata) || "";
+  const others = raw ? raw.split(",;").map((e) => e.trim()).filter((e) => e && !/^displayid *\(/i.test(e)) : [];
+  const keep = others.length ? ` Other customdata entries are kept unchanged: ${others.join(", ")}.` : "";
+  const what = n.kind === "frame"
+    ? " Applies to the parts directly in this frame and in its sub-frames (not beyond an axis); a sub-frame's own ID is replaced by this one. A part with its own ID is in both groups."
+    : " The viewer also adds the ID of the frame the part sits in.";
+  const rows = [["Display ID", nodeField(n.id, n.display_id || "", (x, t) => { x.display_id = t.trim(); },
+    { hint: "Display ID for the 3D viewer's Visual Effects: letters, digits, _ - # (empty = none). Written as customdata=\"displayid(<ID>)\"" }),
+    "Groups " + (n.kind === "frame" ? "the parts under this frame" : "parts") + " for the 3D viewer's Visual Effects (visibility, colour, transparency bound to Data Layer values)." + what + keep]];
+  if (n.kind === "part") rows.push(["Always visible", alwaysVisibleField(n),
+    STAYS_VISIBLE.test(n.name) && !/alwaysvisible/i.test(n.name) && !/_active$/i.test(n.name)
+      ? `Checked because the name contains "active" (as in "inactive"). Visible when Hide housing is on in the viewer (the viewer decides by name).`
+      : STAYS_VISIBLE.test(n.name) ? "Visible when Hide housing is on in the viewer (the name contains alwaysvisible or active)" : "Off: Hide housing in the viewer hides this part. Checking adds _alwaysvisible to the name"]);
+  return rows;
+}
+
+function unboundNote(n) {
+  const v = S.vstate && S.vstate[n.name];
+  const now = v ? ` The viewer currently has: ${v.type === "datalayerVariable" ? "Data Layer value " + v.variable : v.node ? "MOTION axis " + v.node : v.type}${v.script && v.script !== "value" ? ` (${v.script})` : ""}.` : "";
+  return "Not bound here: bind it in the 3D viewer to a MOTION axis or a Data Layer value. A binding made in the viewer is kept when you upload again from here." + now;
+}
+async function loadViewerState() {
+  S.vstate = {};
+  const p = S.project;
+  if (!p || S.view || !(p.viewer_name || (p.extra && p.extra.uploaded_at))) return;
+  try { const r = await api("GET", `/projects/${enc(p.name)}/viewer-state`); if (S.project === p || S.project && S.project.name === p.name) S.vstate = r.bindings || {}; }
+  catch (e) { /* the viewer may be unreachable: the hint just stays general */ }
+  if (S.project && S.project.name === p.name) renderAll();
+}
+
 function axisRows(n) {
   const id = n.id;
   const moAxis = S.axes.find((a) => a.name === n.binding);
@@ -689,7 +749,7 @@ function axisRows(n) {
     ["Minimum", nodeField(id, n.range[0], (x, t) => { x.range[0] = toNumber(t); }, { hint: `Lowest model value in ${unit}` }), `${unit}, model units (the MOTION axis' units while the formula is value)`],
     ["Maximum", nodeField(id, n.range[1], (x, t) => { x.range[1] = toNumber(t); }, { hint: `Highest model value in ${unit}` }), `${unit}, model units (the MOTION axis' units while the formula is value)`],
     ["Initial value", nodeField(id, n.initial, (x, t) => { x.initial = toNumber(t); }, { hint: "Value shown before the axis sends one" }), `${unit}, model units (the MOTION axis' units while the formula is value)`],
-    ["MOTION axis", bindingSelect(n), "The viewer sets this model axis from the MOTION axis (with the formula below)." + typeMismatch],
+    ["MOTION axis", bindingSelect(n), (n.binding ? "The viewer sets this model axis from the MOTION axis (with the formula below)." + typeMismatch : unboundNote(n))],
     ["Formula", nodeField(id, n.formula || "value", (x, t) => { x.formula = checkFormula(t); }, { hint: "ExpressionScript sent to the 3D viewer: how the MOTION value becomes the model value. Written unchanged" }), formulaNote(n)],
     ["Offset", nodeField(id, n.offset, (x, t) => { x.offset = toNumber(t); }, { hint: `Offset in ${unit}` }), `${unit}. Model value = offset + (±1) × MOTION value; built into the XML, separate from the formula`],
     ["Invert", nodeField(id, !!n.invert, (x, t) => { x.invert = t === "true"; }, { hint: "Invert the direction" }), "The model moves the other way: the direction is negated in the XML"]);
@@ -725,6 +785,7 @@ function propertiesCard() {
       ["Mesh", nodeField(n.id, n.mesh || "", (x, t) => { x.mesh = t; }, { choices: Object.keys(p.meshes), hint: "Mesh of the part" }), n.src ? "A mesh file of the project (stored under its real file name)" : "An uploaded STL; its placement is set under Meshes"],
       ["Colour", colour, n.colour ? "Colour in the viewer (the preview uses it too)" : "Not set in the file"],
       ["Alpha", nodeField(n.id, n.alpha ?? "", (x, t) => { x.alpha = t.trim() === "" && x.src ? null : toNumber(t); }, { hint: "Transparency: 0 = opaque, 1 = invisible" }), "0 = opaque"],
+      ...displayIdRows(n),
     ];
     if (n.matrix) rows.push(...matrixRows(n));
     else if (n.bare) rows.push(["Placement", UI.field("none (no transform around it)", () => {}, { readonly: true, hint: "The geometry sits directly in its parent, without a transform" }), "As in the imported file"]);
@@ -741,7 +802,7 @@ function propertiesCard() {
   } else if (n && n.kind === "frame") {
     title = `Frame ${n.name}`;
     rows = [["Name", nodeField(n.id, n.name, (x, t) => { if (!t.trim()) throw new Error("a name is expected"); x.name = t.trim(); }, { hint: "Frame (transform) name" }), "Transform name in the XML"],
-      ...matrixRows(n), keptRow(n)];
+      ...displayIdRows(n), ...matrixRows(n), keptRow(n)];
   } else if (S.selection && S.selection.kind === "mesh" && p.meshes[S.selection.id]) {
     const mid = S.selection.id, m = p.meshes[mid];
     title = `Mesh ${m.file}`;
@@ -862,10 +923,16 @@ async function uploadToViewer() {
 async function uploaded(r) {
   S.project = await api("GET", `/projects/${enc(S.project.name)}`);
   const miss = r.missing_meshes && r.missing_meshes.length ? `. Missing meshes left out: ${r.missing_meshes.join(", ")}` : "";
-  banner(`Uploaded to the 3D viewer as ${r.viewer_name}: ${r.files} files${r.replaced ? " (replaced)" : ""}, ${r.bound_axes} axes bound${miss}`, true);
+  const kept = (r.kept_bindings || []).length;
+  const others = (r.kept_settings || []).length;
+  const keptText = r.replaced ? `. Kept from the viewer: ${kept} binding${kept === 1 ? "" : "s"}${kept ? " (" + r.kept_bindings.join(", ") + ")" : ""}, ${others} setting${others === 1 ? "" : "s"}${others ? " (" + r.kept_settings.join(", ") + ")" : ""}` : "";
+  const dropped = (r.dropped_bindings || []).length ? `. Dropped, no such axis any more: ${r.dropped_bindings.join(", ")}` : "";
+  const cleared = (r.cleared_bindings || []).length ? `. Removed, you cleared the binding here: ${r.cleared_bindings.join(", ")}` : "";
+  banner(`Uploaded to the 3D viewer as ${r.viewer_name}: ${r.files} files${r.replaced ? " (replaced)" : ""}, ${r.bound_axes} axes bound${keptText}${dropped}${cleared}${miss}`, true);
   renderAll();
   loadList(true);
   loadViewerList();
+  loadViewerState();
 }
 async function uploadAsNew() {
   await loadViewerList();
@@ -938,6 +1005,8 @@ function renderStageBar() {
     h("span", { style: "flex:1" }),
     ...(S.project && !S.view ? editControls() : []),
     h("span", { class: "sep" }),
+    tool("eye", E.hide ? "Hide housing is on: parts whose name has no \"active\" or \"alwaysvisible\" are hidden, as the 3D viewer's Hide housing does. The viewer keeps parts under a MOTION axis it is connected to; the preview does not know that and hides them too. Click to show everything." : "Hide housing: hide the parts the 3D viewer's Hide housing would hide (name without \"active\" or \"alwaysvisible\"). The viewer's exception for parts under connected axes is not applied here",
+      () => { E.hide = !E.hide; preview.setHideHousing(E.hide); renderStageBar(); }, { id: "hide-housing", pressed: E.hide }),
     tool("fit", "Fit the view to the model", () => preview.fit(), { id: "fit-view" }));
 }
 

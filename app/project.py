@@ -140,6 +140,7 @@ def validate(p) -> dict:
                 n["display_id"] = customdata.check_id(n["display_id"])
             except ValueError as e:
                 raise ValueError(f"{nm!r}: {e}") from None
+            n["xattrs"] = customdata.attrs_with(n["xattrs"], n["display_id"])     # the stored customdata text follows the Display ID
         else:
             n.pop("display_id", None)
         if kind == "axis":
