@@ -295,3 +295,34 @@ Device test on the X3 at .22 by the user (build 2 axes, upload, jog); 0.2.0 view
 Not kept / open: text content inside XML elements (none of the examples has any); `rotationAxisRolloverEnabled` and other axis
 attributes are kept but not editable; an imported axis' offset/invert start at 0/off (the original offsets live in the file's
 own `_Offset` frames, which are now ordinary frames); the XML declaration is not written (the viewer does not need it).
+
+## 0.4.0 (2026-11-10, built arm64; user go: drag in the preview with snapping, undo/redo)
+Decisions: snapping defaults ON, **10 mm** and **15 degrees** (steps 1/5/10/50/100 mm, 1/5/15/45/90 degrees); Shift while dragging
+snaps off; Space Local/World (default World), all kept in localStorage. Undo/redo is **client-side, 50 steps**: a snapshot of the
+project document before each `mutate()` (only when the server accepted the change and it changed something); undo/redo PUT the
+snapshot through the normal `PUT /projects/<name>`. Not undoable: mesh uploads/deletes and project-level operations (new,
+rename, duplicate, move, delete, upload to viewer); the history is cleared by open/close/rename/move/delete. A snapshot keeps its
+own mesh unit/placement for mesh files that still exist, drops entries of deleted meshes and keeps newer ones (the server's mesh list
+is read first); a snapshot whose parts need a deleted mesh fails with "Undo failed ... mesh" and nothing is changed.
+
+What was built:
+1. **Pick in 3D** (`preview.js`): THREE.Raycaster on part meshes and tool cones, pointerdown/up under 4 px; selects the first tree node
+   with that kind and name (names are not unique in imported projects: the first one wins). Empty space clears the node selection.
+   Not in the read-only view.
+2. **Gizmo**: vendored `TransformControls.js` from three 0.160.0. It is attached to a **proxy** in world space (not to the item), so
+   snapping is exact in world space and along the item's own axes (Local). Every change converts the proxy's world pose with the inverse
+   of the parent's world matrix and applies it live to the item; on release ONE `mutate()` saves it. Pure math in `www/xform.js`
+   (`localMatrix`, `localPoint`, `cleanMatrix` 1e-9 / `cleanVec` 1e-6). OrbitControls is off while dragging.
+3. **What is saved, in which frame** (finding R1: the stored frame is the LOCAL frame of the enclosing node):
+   frame -> `matrix`; part -> `matrix` when it has one (imported parts always do), else the **mesh placement** (position, Rz*Ry*Rx)
+   when it is the only part with that mesh (the unit scale stays the mesh's), else a new part `matrix` (it then no longer follows
+   changes of the mesh's unit or placement); tool -> `position` (and `matrix` when it has one; rotate only then); rotation axis ->
+   `pivot` = local point in the frame the axis element sits in (the fixed `<axis>_Offset` transform is skipped because it keeps the pivot
+   in place) plus the axis' MCS_Origin shift. Translation axes (no pivot in the XML), bare parts/tools and directions/ranges are not
+   dragged. A drag first sets the joints to 0 (sliders too) and asks to grab the handle again.
+4. **Undo/redo** buttons in the header; Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z outside input/textarea/select; W/E for move/rotate.
+5. The red "Not kept: ..." banner is cleared by the next saved change.
+Tests: `tests/test_xform.py` (Python mirror of xform.js proven against the XML generator/evaluator for 4 parent rotations, MCS_Origin,
+axis offset, inch/m meshes), `tests/ui/ui_check.py` (click pick, hook drags through the real save path, snapping, undo/redo, keys).
+The UI check drags through `preview.testDrag(...)`, which emulates TransformControls' snapping and goes through the same
+`dragging-changed` events; a real pointer drag on the gizmo handles was not automated.

@@ -4,6 +4,7 @@
 
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { createPreview } from "./preview.js";
+import * as xform from "./xform.js";
 
 const h = UI.h;
 const enc = encodeURIComponent;
@@ -36,13 +37,21 @@ const PATHS = {
   close: "M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z",
   frame: "M3 21V3h2v16h16v2H3zm5-6V8l5 3.5L8 15zm6-2 5-3.5V17l-5-4z",
   import: "M19 12v7H5v-7H3v7a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2zm-6 .67 2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2v9.67z",
+  drag: "M10 9h4V6h3l-5-5-5 5h3v3zm-1 1H6V7l-5 5 5 5v-3h3v-4zm14 2-5-5v3h-3v4h3v3l5-5zm-9 3h-4v3H7l5 5 5-5h-3v-3z",
+  turn: "M7.11 8.53 5.7 7.11A7.93 7.93 0 0 0 4.06 11h2.02c.16-.9.53-1.74 1.03-2.47zM6.08 13H4.06c.17 1.4.7 2.7 1.64 3.89l1.42-1.42A5.96 5.96 0 0 1 6.08 13zm1.03 5.3A7.93 7.93 0 0 0 11 19.94v-2.02a5.96 5.96 0 0 1-2.47-1.03L7.11 18.3zM13 4.07V1L8.45 5.55 13 10V6.09c2.84.48 5 2.94 5 5.91s-2.16 5.43-5 5.91v2.02c3.95-.49 7-3.85 7-7.93s-3.05-7.44-7-7.93z",
+  snap: "M20 2H4c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM8 20H4v-4h4v4zm0-6H4v-4h4v4zm0-6H4V4h4v4zm6 12h-4v-4h4v4zm0-6h-4v-4h4v4zm0-6h-4V4h4v4zm6 12h-4v-4h4v4zm0-6h-4v-4h4v4zm0-6h-4V4h4v4z",
+  undo: "M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62A7.95 7.95 0 0 1 12.5 10c3.54 0 6.55 2.31 7.6 5.5l2.37-.78A10.02 10.02 0 0 0 12.5 8z",
+  redo: "M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16c1.05-3.19 4.05-5.5 7.6-5.5 1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z",
   reset: "M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62A7.95 7.95 0 0 1 12.5 10c3.54 0 6.55 2.31 7.6 5.5l2.37-.78A10.02 10.02 0 0 0 12.5 8z",
 };
 function ico(name) {
   return h("span", { class: "ui-icon", "aria-hidden": "true", html: `<svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="${PATHS[name] || ""}"/></svg>` });
 }
 function tool(icon, title, onclick, extra = {}) {
-  return h("button", { class: "tool", title, "aria-label": title, onclick, ...extra }, ico(icon));
+  const { pressed, ...rest } = extra;
+  const b = h("button", { class: "tool", title, "aria-label": title, onclick, ...rest }, ico(icon));
+  if (pressed !== undefined) b.setAttribute("aria-pressed", String(!!pressed));
+  return b;
 }
 function wide(icon, label, title, onclick, extra = {}) {
   return h("button", { class: "wide-btn" + (extra.primary ? " primary" : ""), title, onclick, disabled: extra.disabled, id: extra.id }, ico(icon), label);
@@ -62,6 +71,59 @@ const S = {
 };
 let preview = null;
 
+// ---- undo / redo: client-side snapshots of the project document (every change that goes through mutate()). Not part of it:
+// mesh uploads and deletes, project-level operations. Cleared when a project is opened, closed, renamed, moved or deleted.
+const HISTORY_MAX = 50;
+const H = { undo: [], redo: [], busy: false };
+function clearHistory() { H.undo = []; H.redo = []; }
+function pushHistory(snapshot) {
+  H.undo.push(snapshot);
+  if (H.undo.length > HISTORY_MAX) H.undo.shift();
+  H.redo = [];
+}
+// Meshes are not undoable: a snapshot keeps its own unit/placement for a mesh file that still exists, drops meshes that were
+// deleted since, and keeps the ones uploaded since.
+function mergeMeshes(snapMeshes, current) {
+  const out = {};
+  for (const [id, m] of Object.entries(current)) out[id] = snapMeshes[id] && snapMeshes[id].file === m.file ? snapMeshes[id] : m;
+  return out;
+}
+async function undoRedo(direction) {
+  if (H.busy || !S.project || S.view) return;
+  const from = direction === "undo" ? H.undo : H.redo, to = direction === "undo" ? H.redo : H.undo;
+  if (!from.length) return;
+  H.busy = true;
+  await guard(async () => {
+    try {
+      const current = await api("GET", `/projects/${enc(S.project.name)}`);       // the server's meshes are the truth
+      const doc = structuredClone(from[from.length - 1]);
+      doc.meshes = mergeMeshes(doc.meshes || {}, current.meshes);
+      doc.extra = structuredClone(current.extra || {});
+      doc.location = current.location;
+      S.project = await api("PUT", `/projects/${enc(S.project.name)}`, doc);
+      from.pop(); to.push(current);
+    } catch (e) {
+      throw new Error(`${direction === "undo" ? "Undo" : "Redo"} failed, nothing was changed: ${e.message}` + (/mesh/i.test(e.message) ? " (mesh files are not part of undo)" : ""));
+    }
+    if (S.selection && S.selection.kind === "node" && !nodeById(S.selection.id)) S.selection = null;
+    $("save-chip").textContent = "Saved " + nowText();
+    $("save-chip").className = "chip ok";
+    await refreshModel();
+    renderAll();
+    banner(`${direction === "undo" ? "Undone" : "Redone"} (${H.undo.length} to undo, ${H.redo.length} to redo)`, true);
+  });
+  H.busy = false;
+}
+
+// ---- 3D preview toolbar settings (remembered in the browser)
+const SNAP_MOVE = [1, 5, 10, 50, 100], SNAP_ROT = [1, 5, 15, 45, 90];
+const E = {
+  mode: "translate",
+  snap: localGet("snap") !== "0",
+  move: SNAP_MOVE.includes(+localGet("snapMove")) ? +localGet("snapMove") : 10,
+  rot: SNAP_ROT.includes(+localGet("snapRot")) ? +localGet("snapRot") : 15,
+  space: localGet("space") === "local" ? "local" : "world",
+};
 const fmt = (n) => String(+Number(n).toFixed(4));
 const vecText = (v) => (v || []).map(fmt).join(", ");
 const fmtSize = (b) => (b >= MB ? (b / MB).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " kB");
@@ -101,9 +163,13 @@ function currentNode() {
 
 // ---------------------------------------------------------------- saving
 async function mutate(fn) {
+  const before = structuredClone(S.project);
   const draft = structuredClone(S.project);
   fn(draft);
+  const same = JSON.stringify(draft) === JSON.stringify(before);
   S.project = await api("PUT", `/projects/${enc(S.project.name)}`, draft);
+  if (!same) pushHistory(before);                 // only after the server accepted it
+  if ($("banner").textContent.startsWith("Not kept:")) banner("");      // a refused entry is over once a valid change is saved
   $("save-chip").textContent = "Saved " + nowText();
   $("save-chip").className = "chip ok";
   await refreshModel();
@@ -177,12 +243,14 @@ async function loadList(force) {
   if ((!same || force) && (force || !UI.busy(document.body))) renderAll();
 }
 function closeProject(keepLast) {
+  clearHistory();
   S.project = null; S.selection = null; S.zone = null; S.sizes = {}; S.values = {}; S.cache.clear();
   preview.reset();
   if (!keepLast) localSet("last", "");
 }
 async function openProject(name, keepSelection) {
   const p = await api("GET", `/projects/${enc(name)}`);
+  clearHistory();
   if (S.view) { leaveView(); keepSelection = false; }
   if (!keepSelection) { S.selection = null; S.values = {}; S.cache.clear(); preview.reset(); }
   S.project = p;
@@ -765,6 +833,8 @@ function zoneCard() {
 function renderToolbar() {
   const has = !!S.project;
   $("toolbar").replaceChildren(
+    tool("undo", H.undo.length ? `Undo the last change (Ctrl+Z); ${H.undo.length} step(s) can be undone` : "Nothing to undo (changes of this session are kept up to 50 steps; mesh uploads are not undoable)", () => undoRedo("undo"), { id: "undo", disabled: !has || !H.undo.length }),
+    tool("redo", H.redo.length ? `Redo the change that was undone (Ctrl+Y or Ctrl+Shift+Z); ${H.redo.length} step(s)` : "Nothing to redo (a change that was undone can be redone until a new change is made)", () => undoRedo("redo"), { id: "redo", disabled: !has || !H.redo.length }),
     wide("save", "Save", "Changes are saved as soon as they are made; this saves again and rebuilds the preview", () => guard(() => mutate(() => {})), { disabled: !has, id: "save" }),
     wide("download", "Download zip", "Download the viewer package (Model.zip with the XML and STLs, and the axis binding JSON)", () => guard(downloadZip), { disabled: !has, id: "download-zip" }),
     wide("upload", "Upload to viewer", has ? `Send the model and its axis bindings to the 3D viewer project ${S.project.viewer_name || S.project.name} (asks before it replaces one)` : "Send the model and its axis bindings to the ctrlX 3D viewer", () => guard(uploadToViewer), { disabled: !has, primary: true, id: "upload-viewer" }),
@@ -826,23 +896,126 @@ function renderChips() {
   chip.title = z.ok ? "The MCS zone frame of the 3D viewer matches the kinematic" : "The MCS zones would be drawn in the wrong place: see Zone check";
 }
 
+function setMode(mode) {
+  const spec = editSpec(currentNode());
+  if (!spec || !spec.modes.includes(mode)) return;
+  E.mode = mode;
+  preview.setOptions({ mode });
+  renderStageBar();
+}
+function setEditOption(key, value, store) {
+  E[key] = value;
+  localSet(store, typeof value === "boolean" ? (value ? "1" : "0") : String(value));
+  preview.setOptions({ [key]: value });
+  renderStageBar();
+}
+function editControls() {
+  const spec = editSpec(currentNode());
+  const none = "Select a part, tool marker, frame or rotation axis (in the tree or by clicking it in the preview) to move it with the gizmo";
+  const mode = spec && spec.modes.includes(E.mode) ? E.mode : spec ? spec.modes[0] : E.mode;
+  const sel = (id, title, values, cur, unit, key, store) => h("select", { id, title, class: "stage-select", onchange: (ev) => setEditOption(key, +ev.target.value, store) },
+    values.map((v) => h("option", { value: v, selected: v === cur }, v + " " + unit)));
+  return [
+    tool("drag", spec ? "Move (W): drag the arrows or planes of the gizmo to move the selected item. The result is saved at the zero pose, in the frame of the node it sits in." : none,
+      () => setMode("translate"), { id: "mode-move", pressed: mode === "translate", disabled: !spec }),
+    tool("turn", spec && !spec.modes.includes("rotate") ? "Rotate (E) is not possible here: an axis only has a pivot point, and a tool marker without a matrix only a position" : spec ? "Rotate (E): drag the rings of the gizmo to turn the selected item. The result is saved at the zero pose, in the frame of the node it sits in." : none,
+      () => setMode("rotate"), { id: "mode-rotate", pressed: mode === "rotate", disabled: !spec || !spec.modes.includes("rotate") }),
+    h("span", { class: "sep" }),
+    tool("snap", E.snap ? "Snapping is on: moves and rotations jump by the steps at the right. Click to turn it off. Hold Shift while dragging to snap off for one drag." : "Snapping is off: click to turn it on (hold Shift while dragging to turn it off temporarily)",
+      () => setEditOption("snap", !E.snap, "snap"), { id: "snap-toggle", pressed: E.snap }),
+    sel("snap-move", "Move step in mm (snapping)", SNAP_MOVE, E.move, "mm", "move", "snapMove"),
+    sel("snap-rot", "Rotation step in degrees (snapping)", SNAP_ROT, E.rot, "\u00b0", "rot", "snapRot"),
+    h("button", { id: "space-toggle", class: "tool txt", title: E.space === "local" ? "Local: the gizmo and the snap grid follow the selected item's own axes (for an axis: its parent's axes). Click for World." : "World: the gizmo and the snap grid follow the world axes X, Y, Z. Click for Local (the item's own axes).",
+      onclick: () => setEditOption("space", E.space === "local" ? "world" : "local", "space") }, E.space === "local" ? "Local" : "World"),
+  ];
+}
+
 function renderStageBar() {
   const i = S.info;
   const text = !(S.project || S.view) ? "Open or create a project, or view one from the 3D viewer" : i ? `${i.axes} axes, ${i.parts} parts${i.loading ? " (loading ...)" : ""}, ${i.tools} tool markers${i.errors.length ? ". Error: " + i.errors[0] : ""}` : "";
   $("stage-bar").replaceChildren(
     h("span", { id: "stage-info", title: "What the preview shows" }, text),
     h("span", { style: "flex:1" }),
+    ...(S.project && !S.view ? editControls() : []),
+    h("span", { class: "sep" }),
     tool("fit", "Fit the view to the model", () => preview.fit(), { id: "fit-view" }));
 }
 
+// What the gizmo may move for a node, and what is saved (see commitDrag): a frame's matrix, a part's placement (its matrix, or
+// the mesh placement when it has none and is the mesh's only part), a tool's position (or matrix), a ROTATION axis' pivot.
+// Translation axes have no pivot in the XML; bare parts/tools have no transform. Direction and range are never dragged.
+function editSpec(n) {
+  if (!n || S.view || !S.project) return null;
+  const both = ["translate", "rotate"];
+  if (n.kind === "frame") return { id: n.id, kind: "frame", name: n.name, modes: both };
+  if (n.kind === "part") return n.bare ? null : { id: n.id, kind: "part", name: n.name, modes: both };
+  if (n.kind === "tool") return n.bare ? null : { id: n.id, kind: "tool", name: n.name, modes: n.matrix ? both : ["translate"] };
+  if (n.kind === "axis") return n.type === "rotation" ? { id: n.id, kind: "axis", name: n.name, modes: ["translate"] } : null;
+  return null;
+}
 function syncPreview() {
   if (S.view) {
     const v = viewNode();
     preview.select(v && v.kind === "axis" ? { axis: v.name } : v && (v.kind === "geometry") ? { part: v.name } : null);
+    preview.setEdit(null);
     return;
   }
   const n = currentNode();
   preview.select(n && n.kind === "axis" ? { axis: n.name } : n && n.kind === "part" ? { part: n.name } : null);
+  preview.setEdit(editSpec(n));
+}
+
+// A drag ended: ONE mutate() with the values in the frame they are stored in (the preview already converted the world result
+// with the inverse of the parent's world matrix).
+function commitDrag(spec, res) {
+  return (async () => {
+    banner("");
+    try {
+      await mutate((d) => {
+        const hit = locate(d.tree, spec.id);
+        if (!hit) throw new Error("the node is gone");
+        const x = hit.node;
+        const pos = (m) => [m[3], m[7], m[11]];
+        if (spec.kind === "axis") {
+          const mcs = x.mcs_origin || [0, 0, 0];            // the pivot is written minus the MCS_Origin shift
+          x.pivot = xform.cleanVec(res.pivot.map((v, i) => v + mcs[i]));
+        } else if (spec.kind === "tool") {
+          if (x.matrix) x.matrix = res.matrix;
+          x.position = pos(res.matrix);
+        } else if (spec.kind === "part" && !x.matrix && !x.src && d.meshes[x.mesh] && [...walk(d.tree)].filter(([n]) => n.kind === "part" && n.mesh === x.mesh).length === 1) {
+          const c = decompose(res.matrix);                   // the mesh placement (position, Rz*Ry*Rx); the unit scale stays the mesh's
+          d.meshes[x.mesh].placement = { position: c.pos, rotation: c.rot };
+        } else {
+          x.matrix = res.matrix;                             // a part that has a matrix, or shares its mesh with other parts, or a frame
+        }
+      });
+    } catch (e) {
+      banner("Not saved: " + e.message);
+      await refreshModel();
+      renderAll();
+    }
+  })();
+}
+function zeroPose() {                                         // before a drag: the position is saved for the zero pose, not for one pose
+  if (!Object.values(S.values).some((v) => v)) return false;
+  S.values = {};
+  preview.setValues(modelValues());
+  renderAll();
+  banner("The joints were set to 0 because positions are saved at the zero pose. Grab the handle again.", true);
+  return true;
+}
+function pickNode(hit) {
+  if (S.view || !S.project) return;
+  if (!hit) {                                                  // empty space: no node selected (the tree and the preview agree)
+    if (S.selection && S.selection.kind === "node") { S.selection = null; renderAll(); syncPreview(); }
+    return;
+  }
+  const n = [...walk(S.project.tree)].map(([x]) => x).find((x) => x.kind === hit.kind && x.name === hit.name);
+  if (!n) return;
+  S.selection = { kind: "node", id: n.id };
+  renderAll(); syncPreview();
+  const row = document.querySelector("#tree-box .ui-sel");
+  if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
 }
 
 // Scroll positions of the two columns and of every scrolling box inside them (the tree boxes, ...), by element id: the
@@ -876,6 +1049,7 @@ function renderAll() {
   $("right").replaceChildren(...right);
   restoreScroll(keep);
   renderStageBar();
+  S.renders = (S.renders || 0) + 1;                       // for tests: a change is shown when this has grown
 }
 
 // ---------------------------------------------------------------- 3D viewer projects: list and read-only view
@@ -1170,8 +1344,27 @@ async function loadMotion() {
 preview = createPreview($("stage"), {
   loadMesh: (f) => loadMesh(f),
   onInfo: (info) => { S.info = info; renderStageBar(); },
+  onPick: pickNode,
+  onCommit: commitDrag,
+  beforeDrag: zeroPose,
 });
-window.__mb = { S, preview };
+preview.setOptions({ snap: E.snap, move: E.move, rot: E.rot, space: E.space, mode: E.mode });
+window.__mb = { S, preview, xform, H, E, pushHistory };
+
+// keys: W move, E rotate (the gizmo), Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo; not while typing (the browser's own undo works there)
+document.addEventListener("keydown", (ev) => {
+  const t = ev.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+  if (document.querySelector("dialog[open]")) return;
+  const k = ev.key.toLowerCase();
+  if ((ev.ctrlKey || ev.metaKey) && !ev.altKey) {
+    if (k === "z" && !ev.shiftKey) { ev.preventDefault(); undoRedo("undo"); }
+    else if (k === "y" || (k === "z" && ev.shiftKey)) { ev.preventDefault(); undoRedo("redo"); }
+    return;
+  }
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  if (k === "w" || k === "e") setMode(k === "w" ? "translate" : "rotate");
+});
 
 // ---- resizable left and right column. The left handle is the framework's UI.splitter (UI.splitter(panel) sets --ui-side on
 // the layout); the framework has none for a right panel, so the right handle is made here with the same look and the same

@@ -14,6 +14,7 @@ import base64
 import json
 import os
 import sys
+import time
 import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
@@ -46,7 +47,7 @@ def hint_check(where):
     b.check(not missing, f"every visible button, field, header and status has a hint ({where}) " + (str(missing) if missing else ""))
 
 
-b = Browser(screenshots=sys.argv[1] if len(sys.argv) > 1 else None, width=1600, height=950)
+b = Browser(webdriver=os.environ.get("WEBDRIVER", "http://127.0.0.1:4444"), screenshots=sys.argv[1] if len(sys.argv) > 1 else None, width=1600, height=950)
 try:
     b.open(URL + "?token=dev")
     b.check(b.until("$('new-project') !== null && $('project-chip').textContent === 'No project open'"), "page loads, no project open")
@@ -361,6 +362,253 @@ try:
     b.js("window.__mb.preview.fit()")
     b.shot("readonly-2")
     hint_check("read-only view with two handles")
+
+    # ---- 0.4.0: pick in 3D, gizmo with snapping, undo / redo ----
+    send("POST", "/projects", {"name": "UiDrag", "location": "common"})
+    for mesh in ("cube.stl", "cube2.stl"):
+        req = urllib.request.Request(URL + f"api/v1/projects/UiDrag/meshes/{mesh}?unit=mm", data=demo_stl(), method="PUT",
+                                     headers={"Authorization": "Bearer dev", "Content-Type": "application/octet-stream"})
+        opener.open(req, timeout=20).read()
+    turn = [0, -1, 0, 100, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]          # frame "Turn": rotated 90 degrees about z, at x = 100
+    doc = send("GET", "/projects/UiDrag")
+    doc["tree"] = [{"kind": "frame", "id": "f1", "name": "Turn", "matrix": turn, "children": [
+        {"kind": "part", "id": "p1", "name": "cubeM", "mesh": "cube", "colour": [0.6, 0.6, 0.6], "matrix": [1, 0, 0, 5, 0, 1, 0, 5, 0, 0, 1, 5, 0, 0, 0, 1]},
+        {"kind": "part", "id": "p2", "name": "cubeP", "mesh": "cube2", "colour": [0.9, 0.5, 0.1]},
+        {"kind": "tool", "id": "t1", "name": "Tip", "position": [0, 0, -150]},
+        {"kind": "axis", "id": "a1", "name": "RotA", "type": "rotation", "direction": [0, 0, 1], "pivot": [10, 20, 0], "range": [-360, 360], "children": []},
+        {"kind": "axis", "id": "a2", "name": "LinA", "type": "translation", "direction": [1, 0, 0], "pivot": [0, 0, 0], "range": [-100, 100], "children": []}]}]
+    doc["meshes"]["cube2"]["placement"]["position"] = [0, 0, 200]
+    send("PUT", "/projects/UiDrag", doc)
+    b.check(b.until("[...document.querySelectorAll('#projects-table tr[data-key]')].some(r => r.dataset.key === 'UiDrag')", 12), "the drag test project is listed")
+    b.js("window.__confirms.length = 0; HTMLCanvasElement.prototype.setPointerCapture = function () {}; HTMLCanvasElement.prototype.releasePointerCapture = function () {}; localStorage.clear()")
+    b.js("document.querySelector('#projects-table tr[data-key=\"UiDrag\"]').click()")
+    b.check(b.until("$('project-chip').textContent.startsWith('UiDrag') && window.__mb.preview.info().loaded === 2", 15), "the drag test project is open, both meshes loaded")
+    b.check(b.js("return $('undo').disabled && $('redo').disabled"), "undo and redo are disabled in a freshly opened project")
+    b.check(b.js("return ['mode-move', 'mode-rotate', 'snap-toggle', 'snap-move', 'snap-rot', 'space-toggle', 'undo', 'redo'].every(id => $(id) && $(id).title.length > 15)"), "the new buttons and selects have hints")
+    b.check(b.js("return $('mode-move').disabled && $('mode-rotate').disabled"), "no item selected: the gizmo buttons are disabled")
+    b.check(b.js("return window.__mb.E.snap === true && window.__mb.E.move === 10 && window.__mb.E.rot === 15"), "snapping defaults: on, 10 mm, 15 degrees")
+
+    def sel_node(label):
+        b.js("[...document.querySelectorAll('#tree-box .ui-node')].find(n => n.querySelector('.ui-label').textContent === arguments[0]).click()", label)
+        b.check(b.until("document.querySelector('#tree-box .ui-sel .ui-label') && document.querySelector('#tree-box .ui-sel .ui-label').textContent === " + json.dumps(label)), f"{label} selected in the tree")
+
+    # -- pick in 3D: a real click (pointerdown + pointerup within 4 px) on the part's mesh
+    def click_canvas(kind, name, moved=0):
+        x, y = b.js("return window.__mb.preview.screenOf(arguments[0], arguments[1])", kind, name)
+        b.js("""const c = document.querySelector('#stage canvas'); const [x, y, moved] = arguments;
+               const ev = (t, dx) => c.dispatchEvent(new PointerEvent(t, {pointerId: 1, button: 0, buttons: t === 'pointerup' ? 0 : 1, clientX: x + dx, clientY: y, bubbles: true}));
+               ev('pointerdown', 0); ev('pointerup', moved);""", x, y, moved)
+    click_canvas("part", "cubeM", moved=12)
+    b.check(b.js("return window.__mb.S.selection === null"), "a press that moves 12 px is an orbit, not a click: nothing is picked")
+    click_canvas("part", "cubeM")
+    b.check(b.until("window.__mb.S.selection && window.__mb.S.project.tree[0].children[0].id === window.__mb.S.selection.id"), "clicking the part in the preview selects its tree node")
+    b.check(b.until("$('props-card').textContent.includes('Part cubeM') && document.querySelector('#tree-box .ui-sel .ui-label').textContent === 'cubeM'"), "the tree row and the properties follow")
+    b.check(b.js("const e = window.__mb.preview.edit(); return e.attached && e.kind === 'part' && e.mode === 'translate'"), "the gizmo is attached in move mode")
+    b.check(b.js("return !$('mode-move').disabled && !$('mode-rotate').disabled && $('mode-move').getAttribute('aria-pressed') === 'true'"), "move and rotate are offered, move is active")
+    b.js("window.__mb.preview.fit()")
+    b.shot("drag-gizmo")
+    click_canvas("tool", "Tip")
+    b.check(b.until("window.__mb.S.selection && window.__mb.S.selection.id === 't1'"), "clicking the tool marker selects the tool")
+    b.check(b.js("return $('mode-rotate').disabled"), "a tool marker without a matrix can only be moved")
+    b.js("window.__mb.preview.fit()")
+
+    def drag(spec, steps=None):
+        """A drag through the preview hook; waits until it is saved AND shown (the page rendered again)."""
+        r0 = b.js("return window.__mb.S.renders || 0")
+        h0 = b.js("return window.__mb.H.undo.length")
+        b.js("window.__mb.preview.testDrag(arguments[0])", spec)
+        ok = b.until(f"(window.__mb.S.renders || 0) > {r0} && window.__mb.H.undo.length === {h0 + 1 if steps is None else steps}", 10)
+        b.until("window.__mb.preview.info().loaded === window.__mb.preview.info().parts", 10)
+        return ok
+
+    # -- drag a part that has a matrix (world snap 10 mm): the result is stored in the Turn frame
+    def part_matrix(i=0):
+        return b.js("return window.__mb.S.project.tree[0].children[arguments[0]].matrix", i)
+    def near(a, c, tol=1e-6):
+        return len(a) == len(c) and all(abs(x - y) <= tol for x, y in zip(a, c))
+    sel_node("cubeM")
+    b.js("window.__mb.S.values = {RotA: 30}; window.__mb.preview.setValues({RotA: 30}); window.dispatchEvent(new Event('resize'))")
+    drag({"move": [23, 7, -14]})
+    b.check(b.until("window.__mb.H.undo.length === 1"), "one drag = one saved change (one undo step)")
+    m = part_matrix()
+    b.check(near([m[3], m[7], m[11]], [10, -20, -10]), f"the part's matrix holds the dragged, 10 mm snapped place in the frame's own coordinates (world 120, 10, -10) {m[3], m[7], m[11]}")
+    b.check(near([m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]], [1, 0, 0, 0, 1, 0, 0, 0, 1]), "its rotation did not change")
+    b.check(b.js("return Object.values(window.__mb.S.values).every(v => !v)"), "the joint values were set to the zero pose for the drag")
+    b.check(b.js("return !$('undo').disabled && $('redo').disabled && $('save-chip').textContent.startsWith('Saved')"), "undo is enabled, redo is not; the project is saved " + str(b.js("return [$('undo').disabled, $('redo').disabled, $('save-chip').textContent, window.__mb.H.undo.length, window.__mb.H.redo.length, $('banner').textContent]")))
+    b.click("#undo")
+    b.check(b.until("window.__mb.H.undo.length === 0 && window.__mb.H.redo.length === 1"), "undo moves the step to the redo stack")
+    b.check(near(part_matrix()[3:12:4], [5, 5, 5]), "undo restored the old position (5, 5, 5)")
+    b.check(near(get("/projects/UiDrag")["tree"][0]["children"][0]["matrix"][3:12:4], [5, 5, 5]), "the server has the old position again")
+    b.click("#redo")
+    b.check(b.until("window.__mb.H.undo.length === 1 && window.__mb.H.redo.length === 0"), "redo re-applies it")
+    b.check(near(get("/projects/UiDrag")["tree"][0]["children"][0]["matrix"][3:12:4], [10, -20, -10]), "the server has the dragged position again")
+    # the preview shows what is saved: the part's wrapper really is at world (120, 10, -10)
+    b.check(b.until("window.__mb.preview.info().loaded === 2"), "preview rebuilt after redo")
+    b.js("window.__mb.preview.setOptions({snap: false})")
+    drag({"move": [0.5, 0, 0]})
+    b.check(b.until("window.__mb.H.undo.length === 2"), "a drag with snapping off is one more step")
+    m = part_matrix()
+    b.check(near([m[3], m[7], m[11]], [10, -20.5, -10]), "snapping off: the exact (unsnapped) value, rounded to 1e-6")
+    b.js("window.__mb.preview.setOptions({snap: true})")
+    b.js("window.__mb.preview.testDrag({move: [0, 0, 0]})")
+    time.sleep(1)
+    b.check(b.js("return window.__mb.H.undo.length") == 2, "a drag that changes nothing does not save or add an undo step")
+
+    # -- rotate (15 degree snap, world axes)
+    b.js("window.__mb.preview.setOptions({mode: 'rotate'})")
+    drag({"rotate": {"axis": [0, 0, 1], "deg": 40}})
+    b.check(b.until("window.__mb.H.undo.length === 3"), "a rotation is saved too")
+    m = part_matrix()
+    c = 0.7071067811865476
+    b.check(near([m[0], m[1], m[4], m[5]], [c, -c, c, c], 1e-8), f"40 degrees snapped to 45 about z, as seen in the frame: {m[:6]}")
+    b.js("window.__mb.preview.setOptions({mode: 'translate'})")
+
+    # -- a frame: its matrix, in its parent's frame (the world here)
+    sel_node("Turn")
+    drag({"move": [14, 0, 0]})
+    b.check(b.until("window.__mb.S.project.tree[0].matrix[3] === 110"), "the frame is moved to x = 110 (world snap)")
+    b.check(near(b.js("return window.__mb.S.project.tree[0].matrix"), [0, -1, 0, 110, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]), "its rotation is kept, nothing else changed")
+
+    # -- a part without a matrix whose mesh it alone uses: the mesh placement (local snap along the item's own axes)
+    sel_node("cubeP")
+    b.js("window.__mb.preview.setOptions({space: 'local'})")
+    drag({"move": [0, 33, 0]})
+    b.check(b.until("window.__mb.S.project.meshes.cube2.placement.position[1] !== 0"), "the placement of the mesh cube2 is changed (the part has no matrix of its own)")
+    b.check(near(b.js("return window.__mb.S.project.meshes.cube2.placement.position"), [0, 30, 200]), "local snap: 33 mm along the item's own axis becomes 30")
+    b.check(b.js("return window.__mb.S.project.tree[0].children[1].matrix === undefined"), "the part still has no matrix")
+    # -- a tool marker: its position
+    sel_node("Tip")
+    b.js("window.__mb.preview.setOptions({space: 'world'})")
+    drag({"move": [7, 0, 0]})
+    b.check(b.until("window.__mb.S.project.tree[0].children[2].position[1] !== 0"), "the tool marker position changes")
+    b.check(near(b.js("return window.__mb.S.project.tree[0].children[2].position"), [0, -10, -150]), "world (120, 0, -150) is (0, -10, -150) in the frame Turn")
+    # -- a rotation axis: only its pivot; a translation axis cannot be dragged
+    sel_node("RotA")
+    b.check(b.js("const e = window.__mb.preview.edit(); return e.attached && e.kind === 'axis'") and b.js("return $('mode-rotate').disabled"), "a rotation axis: gizmo attached, move only")
+    drag({"move": [13, 0, 0]})
+    b.check(b.until("window.__mb.S.project.tree[0].children[3].pivot[1] !== 20"), "the pivot changes")
+    pv = b.js("return window.__mb.S.project.tree[0].children[3].pivot")
+    # RotA pivot (10, 20, 0) is at world (110 - 20, 10, 0) = (90, 10, 0); +13 -> 103 -> world snap 100 -> (frame at x = 110) local (10, 10, 0)
+    b.check(near(pv, [10, 10, 0]), f"pivot saved in the frame it sits in: {pv}")
+    b.check(b.js("const t = window.__mb.S.project.tree[0].children[3]; return t.direction.join() === '0,0,1' && t.range.join() === '-360,360'"), "direction and range are untouched")
+    sel_node("LinA")
+    b.check(b.js("return !window.__mb.preview.edit().attached && $('mode-move').disabled"), "a translation axis has no pivot: no gizmo")
+    nsteps = b.js("return window.__mb.H.undo.length")
+    b.check(nsteps == 7, f"every drag was one step: 7 steps so far ({nsteps})")
+
+    # -- keys: Ctrl+Z undoes, but not while typing in a field; W/E switch the gizmo mode
+    sel_node("Tip")
+    n_undo = b.js("return window.__mb.H.undo.length")
+    b.js("""const i = document.querySelector('#props-card .ui-edit'); i.focus();
+           i.dispatchEvent(new KeyboardEvent('keydown', {key: 'z', ctrlKey: true, bubbles: true}));""")
+    b.check(b.js("return window.__mb.H.undo.length") == n_undo, "Ctrl+Z inside a field is left to the browser")
+    b.js("document.activeElement.blur(); document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'z', ctrlKey: true, bubbles: true}))")
+    b.check(b.until(f"window.__mb.H.undo.length === {n_undo - 1} && window.__mb.H.redo.length === 1"), "Ctrl+Z undoes (the tool marker is back)")
+    b.check(b.until("window.__mb.S.project.tree[0].children[3].pivot[1] === 20"), "the last step (the pivot) is undone")
+    b.js("document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'y', ctrlKey: true, bubbles: true}))")
+    b.check(b.until(f"window.__mb.H.undo.length === {n_undo} && window.__mb.H.redo.length === 0 && window.__mb.S.project.tree[0].children[3].pivot[1] === 10"), "Ctrl+Y redoes")
+    b.js("document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'z', ctrlKey: true, bubbles: true}))")
+    b.check(b.until(f"window.__mb.H.redo.length === 1"), "undo once more")
+    b.js("document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'Z', ctrlKey: true, shiftKey: true, bubbles: true}))")
+    b.check(b.until(f"window.__mb.H.redo.length === 0 && window.__mb.H.undo.length === {n_undo}"), "Ctrl+Shift+Z redoes")
+    sel_node("cubeM")
+    b.js("document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'e', bubbles: true}))")
+    b.check(b.until("window.__mb.preview.edit().mode === 'rotate' && $('mode-rotate').getAttribute('aria-pressed') === 'true'"), "E switches to rotate")
+    b.js("document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'w', bubbles: true}))")
+    b.check(b.until("window.__mb.preview.edit().mode === 'translate'"), "W switches to move")
+
+    # -- typed edits are undoable too, and a refused entry's banner goes away after the next valid change
+    def set_field(label, value):
+        b.js("""const tr = [...document.querySelectorAll('#props-card tr')].find(r => r.cells[0].textContent.trim() === arguments[0]);
+               const e = tr.querySelector('.ui-edit'); e.focus(); e.value = arguments[1];
+               e.dispatchEvent(new Event('input', {bubbles: true})); e.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}))""", label, value)
+    sel_node("Tip")
+    set_field("Position (x, y, z) mm", "1, 2")
+    b.check(b.until("$('banner').textContent.startsWith('Not kept:')"), "a refused entry shows the red 'Not kept' banner")
+    n_undo = b.js("return window.__mb.H.undo.length")
+    set_field("Position (x, y, z) mm", "0, 0, 25")
+    b.check(b.until(f"window.__mb.H.undo.length === {n_undo + 1}"), "a typed change is one undo step")
+    b.check(b.until("$('banner').hidden || $('banner').textContent === ''"), "the 'Not kept' banner is gone after the next valid change")
+    b.check(near(b.js("return window.__mb.S.project.tree[0].children[2].position"), [0, 0, 25]), "typing exact values keeps working")
+    b.click("#undo")
+    b.check(b.until("window.__mb.S.project.tree[0].children[2].position[2] === -150"), "undo of a typed change")
+    sel_node("cubeM")
+    b.js("window.__mb.preview.fit()")
+    b.check(b.js("return !$('undo').disabled && !$('redo').disabled"), "both undo and redo are enabled after an undo")
+    b.shot("undo-redo")
+
+    # -- history is capped at 50 and cleared when another project is opened
+    b.js("for (let i = 0; i < 60; i++) window.__mb.pushHistory({i}); ")
+    b.check(b.js("return window.__mb.H.undo.length") == 50 and b.js("return window.__mb.H.undo[0].i") == 10, "history keeps the last 50 steps")
+    b.js("window.__mb.H.undo.length = 0; window.__mb.H.redo.length = 0")
+    sel_node("Tip")
+    set_field("Position (x, y, z) mm", "0, 0, 7")
+    b.check(b.until("window.__mb.H.undo.length === 1"), "one step on the stack")
+    b.js("document.querySelector('#projects-table tr[data-key=\"UiGantry\"]').click()")
+    b.check(b.until("$('project-chip').textContent.startsWith('UiGantry')"), "another project is opened")
+    b.check(b.js("return window.__mb.H.undo.length === 0 && window.__mb.H.redo.length === 0 && $('undo').disabled && $('redo').disabled"), "the history is cleared")
+    b.js("document.querySelector('#projects-table tr[data-key=\"UiDrag\"]').click()")
+    b.check(b.until("$('project-chip').textContent.startsWith('UiDrag') && window.__mb.preview.info().loaded === 2", 15), "back in the drag test project")
+
+    # -- undo after a mesh was deleted elsewhere: a clear error, the project is not touched
+    sel_node("cubeP")
+    drag({"move": [0, 40, 0]})
+    b.check(b.until("window.__mb.H.undo.length === 1"), "a step that uses the mesh cube2")
+    sel_node("cubeP")
+    b.click("#delete-node")
+    b.check(b.until("window.__mb.S.project.tree[0].children.every(n => n.name !== 'cubeP')"), "the part is deleted from the tree (a step)")
+    send("DELETE", "/projects/UiDrag/meshes/cube2.stl")                       # the mesh goes (not undoable)
+    steps = b.js("return window.__mb.H.undo.length")
+    b.click("#undo")
+    b.check(b.until("$('banner').textContent.includes('Undo failed') && $('banner').textContent.includes('mesh')"), "undo that needs a deleted mesh fails with a message: " + str(b.text('#banner')))
+    b.check(b.js("return window.__mb.H.undo.length") == steps, "the history is kept after the failed undo")
+    b.check("cube2" not in get("/projects/UiDrag")["meshes"] and all(n["name"] != "cubeP" for n in get("/projects/UiDrag")["tree"][0]["children"]), "the project on the server is unchanged (no mesh entry without a file came back)")
+
+    # -- toolbar settings are remembered, hold-Shift disables snapping, Local/World
+    b.js("window.__mb.preview.setOptions({space: 'world'})")
+    b.click("#snap-toggle")
+    b.check(b.until("window.__mb.E.snap === false && localStorage.getItem('model-builder.snap') === '0' && $('snap-toggle').getAttribute('aria-pressed') === 'false'"), "the snap switch turns snapping off and is remembered")
+    b.check(b.js("return window.__mb.preview.edit().translationSnap") in (None, 0), "the gizmo has no translation snap when it is off")
+    b.click("#snap-toggle")
+    b.set_value("#snap-move", "50")
+    b.set_value("#snap-rot", "90")
+    b.check(b.until("window.__mb.E.move === 50 && window.__mb.E.rot === 90 && localStorage.getItem('model-builder.snapMove') === '50'"), "the steps are selectable and remembered")
+    b.check(b.js("const e = window.__mb.preview.edit(); return e.translationSnap === 50 && Math.abs(e.rotationSnap - Math.PI / 2) < 1e-9"), "the gizmo uses them")
+    b.js("window.dispatchEvent(new KeyboardEvent('keydown', {key: 'Shift', bubbles: true}))")
+    b.check(b.js("return window.__mb.preview.edit().translationSnap") in (None, 0), "holding Shift switches snapping off for the drag")
+    b.js("window.dispatchEvent(new KeyboardEvent('keyup', {key: 'Shift', bubbles: true}))")
+    b.check(b.js("return window.__mb.preview.edit().translationSnap") == 50, "releasing Shift switches it on again")
+    b.click("#space-toggle")
+    b.check(b.until("window.__mb.E.space === 'local' && $('space-toggle').textContent === 'Local' && window.__mb.preview.edit().space === 'local'"), "Space toggles to Local")
+    b.set_value("#snap-move", "10")
+    b.set_value("#snap-rot", "15")
+    b.click("#space-toggle")
+    b.check(b.until("window.__mb.E.space === 'world'"), "and back to World")
+
+    # -- the matrix math in the browser: world -> stored frame -> world for several parent rotations
+    ok = b.js("""const X = window.__mb.xform;
+        const rotz = (d, t) => { const a = d * Math.PI / 180, c = Math.cos(a), s = Math.sin(a); return [c, -s, 0, t[0], s, c, 0, t[1], 0, 0, 1, t[2], 0, 0, 0, 1]; };
+        const rotx = (d, t) => { const a = d * Math.PI / 180, c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, t[0], 0, c, -s, t[1], 0, s, c, t[2], 0, 0, 0, 1]; };
+        const parents = [X.IDENTITY, rotz(90, [100, 0, 0]), rotz(33, [-5, 7, 11]), X.mul(rotx(70, [0, 0, 300]), rotz(-20, [1, 2, 3])), X.mul(rotz(45, [0, 0, 0]), [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1])];
+        const world = X.mul(rotz(15, [120, 10, -10]), rotx(30, [0, 0, 0]));
+        let worst = 0;
+        for (const P of parents) {
+          const L = X.localMatrix(P, world), back = X.worldMatrix(P, L);
+          worst = Math.max(worst, ...back.map((v, i) => Math.abs(v - world[i])));
+          const p = X.localPoint(P, [120, 10, -10]);
+          worst = Math.max(worst, ...X.applyPoint(P, p).map((v, i) => Math.abs(v - [120, 10, -10][i])));
+        }
+        const known = X.localPoint(rotz(90, [100, 0, 0]), [80, 10, 0]);           // the frame Turn: world (80, 10, 0) is (10, 20, 0) in it
+        const c = X.cleanVec([9.999999999997, -0.0000000001, 1.0000004]);
+        return [worst < 1e-9, Math.abs(known[0] - 10) < 1e-9 && Math.abs(known[1] - 20) < 1e-9 && Math.abs(known[2]) < 1e-9, c.join() === '10,0,1'];""")
+    b.check(ok == [True, True, True], f"world -> parent-local -> world round trip for 5 parents, a known value, rounding {ok}")
+
+    b.js("document.querySelector('#projects-table tr[data-key=\"UiDrag\"]') && 0")
+    sel_node("cubeM")
+    b.js("window.__mb.preview.setOptions({space: 'world', mode: 'translate'}); window.__mb.preview.fit()")
+    b.js("window.__mb.preview.setValues({})")
+    b.shot("drag-toolbar")
+    hint_check("editor with the drag toolbar")
 
     errors = b.js("return window.__errors")
     b.check(not errors, "no console errors " + (str(errors) if errors else ""))
