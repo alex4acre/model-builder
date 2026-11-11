@@ -7,10 +7,10 @@ import shutil
 import threading
 import time
 
-from app import motion, project as proj, storage, viewanalysis, viewcache, xmlgen, xmlimport, zone
+from app import merge, motion, project as proj, storage, viewanalysis, viewcache, xmlgen, xmlimport, zone
 from app.framework.bus import BusError
 from app.framework.web import HttpError
-from app.viewer import ViewerNotInstalled
+from app.viewer import ViewerError, ViewerNotInstalled
 
 
 class Core:
@@ -71,18 +71,63 @@ class Core:
         if as_name is not None and exists:
             raise HttpError(409, f"The 3D viewer has a project named {target!r} already; choose another name.", "NAME_TAKEN")
         if exists and not replace:
-            raise HttpError(409, f"Replaces {target} in the 3D viewer: its files are replaced, the axis bindings are sent "
-                                 "again and the library picture is redrawn.", "EXISTS")
+            raise HttpError(409, f"Replaces {target} in the 3D viewer: its files are replaced. The viewer's own bindings (Data Layer "
+                                 "values on axes this app leaves unbound) and its visual effects, safe zones and other settings are "
+                                 "kept; the axes bound here are sent again and the library picture is redrawn.", "EXISTS")
         gen = self.generate(name, target)
+        current = None
+        if exists:
+            # read what the viewer has BEFORE the upload clears it; if that fails nothing is changed
+            try:
+                current = viewer.project_configuration(target)
+            except ViewerNotInstalled:
+                raise
+            except ViewerError as e:
+                raise ViewerError(f"The settings the 3D viewer has for {target!r} cannot be read ({e}); nothing was uploaded, so "
+                                  "they are not lost", e.path, e.status) from None
+        cfg = gen["configuration"]
+        bound_names = {a["name"] for a in xmlgen.axis_nodes(p) if a.get("binding")}
+        sent_all = (p.get("extra") or {}).get("sent_bindings") or {}
+        report = None
+        if exists and current is not None:
+            cfg, report = merge.merge_configuration(cfg, current, [a["name"] for a in xmlgen.axis_nodes(p)], bound_names,
+                                                    sent_all.get(target) or {})
         viewer.create(target, gen["files"])
-        viewer.configure(target, gen["configuration"])         # always: a (re-)upload clears the bindings
+        viewer.configure(target, cfg)         # always: a (re-)upload clears the bindings
         p = self.store.get(name)
         p["viewer_name"] = target
-        p.setdefault("extra", {})["uploaded_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        extra = p.setdefault("extra", {})
+        extra["uploaded_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        # what this app sent per axis: a viewer entry that is still exactly that after the user cleared the binding here is dropped
+        sent = {e["ModelAxisName"]: e for e in cfg["ConfiguredAxis"] if e["ModelAxisName"] in bound_names}
+        extra["sent_bindings"] = {**{k: v for k, v in (extra.get("sent_bindings") or {}).items() if k != target}, target: sent}
         self.store.put(name, p)
-        bound = len(gen["configuration"]["ConfiguredAxis"])
-        return {"name": name, "viewer_name": target, "replaced": exists, "files": len(gen["files"]), "bound_axes": bound,
-                "missing_meshes": gen["missing"], "uploaded_at": p["extra"]["uploaded_at"]}
+        bound = len(sent)
+        res = {"name": name, "viewer_name": target, "replaced": exists, "files": len(gen["files"]), "bound_axes": bound,
+               "missing_meshes": gen["missing"], "uploaded_at": extra["uploaded_at"],
+               "kept_bindings": [], "cleared_bindings": [], "dropped_bindings": [], "kept_settings": []}
+        if report:
+            res.update(kept_bindings=report["kept_bindings"], cleared_bindings=report["cleared"],
+                       dropped_bindings=report["dropped"], kept_settings=report["kept_settings"])
+        return res
+
+    def viewer_state(self, name: str, token: str) -> dict:
+        """What the 3D viewer currently has for the unbound axes of the project's viewer project (read only)."""
+        p = self.store.get(name)
+        target = p.get("viewer_name") or name
+        viewer = self.viewer_factory(token)
+        if target not in [str(n) for n in viewer.projects()]:
+            return {"viewer_name": target, "exists": False, "bindings": {}}
+        cfg = viewer.project_configuration(target) or {}
+        bound = {a["name"] for a in xmlgen.axis_nodes(p) if a.get("binding")}
+        names = {a["name"] for a in xmlgen.axis_nodes(p)}
+        out = {}
+        for e in cfg.get("ConfiguredAxis") or []:
+            n = e.get("ModelAxisName") if isinstance(e, dict) else None
+            if n in names and n not in bound and (e.get("DatalayerNode") or e.get("DatalayerVariable")):
+                out[n] = {"type": e.get("ConnectionType") or "", "node": e.get("DatalayerNode") or "",
+                          "variable": e.get("DatalayerVariable") or "", "script": e.get("ExpressionScript") or ""}
+        return {"viewer_name": target, "exists": True, "bindings": out}
 
     # --- import of a viewer project as an editable project ------------------------------------------
 

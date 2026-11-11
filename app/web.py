@@ -46,6 +46,7 @@ class RequestHandler(ApiHandler):
         ("POST", r"/projects/([^/]+)/zone-fix", "zone_fix"),
         ("POST", r"/projects/([^/]+)/from-kinematic", "from_kinematic"),
         ("POST", r"/projects/([^/]+)/upload-to-viewer", "upload_to_viewer"),
+        ("GET", r"/projects/([^/]+)/viewer-state", "viewer_state"),
         ("GET", r"/viewer/projects", "viewer_projects"),
         ("POST", r"/viewer/projects/([^/]+)/open", "viewer_open"),
         ("POST", r"/viewer/projects/([^/]+)/import", "viewer_import"),
@@ -169,6 +170,9 @@ class RequestHandler(ApiHandler):
         self.send_json(200, core.upload(name, self.token(), replace, as_name))
 
     # --- 3D viewer projects, read-only ------------------------------------------------------------
+
+    def viewer_state(self, name):
+        self.send_json(200, core.viewer_state(name, self.token()))
 
     def viewer_projects(self):
         self.send_json(200, {"projects": core.viewer_projects(self.token())})

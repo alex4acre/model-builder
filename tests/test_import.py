@@ -359,8 +359,9 @@ class CoreImportTest(unittest.TestCase):
         with self.assertRaises(HttpError) as c:
             self.core.upload("G2", "t", False)
         self.assertEqual(c.exception.code, "EXISTS")
-        self.assertEqual(str(c.exception), "Replaces Demo Gantry in the 3D viewer: its files are replaced, the axis bindings are sent "
-                                           "again and the library picture is redrawn.")
+        self.assertEqual(str(c.exception), "Replaces Demo Gantry in the 3D viewer: its files are replaced. The viewer's own bindings (Data Layer "
+                                           "values on axes this app leaves unbound) and its visual effects, safe zones and other settings are "
+                                           "kept; the axes bound here are sent again and the library picture is redrawn.")
         r = self.core.upload("G2", "t", True)
         self.assertEqual((r["viewer_name"], r["replaced"], r["bound_axes"]), ("Demo Gantry", True, 4))
         self.assertEqual(self.viewer.log[-2:], [("create", "Demo Gantry"), ("configure", "Demo Gantry")])

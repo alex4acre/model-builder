@@ -121,6 +121,7 @@ class FakeViewer:
         self.installed = installed
         self.store = {}          # project name -> {"files": {...}, "configuration": dict or None}
         self.log = []
+        self.fail_configuration = False   # tests: reading a configuration fails
         self.demos = {}          # name -> loader() -> {"files", "configuration"}: listed and served, never written
         if demos:
             from app import demos as demo_projects
@@ -149,7 +150,14 @@ class FakeViewer:
         return buf.getvalue()
 
     def project_configuration(self, name: str):
-        cfg = self._get(name)["configuration"]
+        if self.fail_configuration:
+            raise ViewerError("Simulated failure reading the configuration", f"/projects/{name}/configuration", 500)
+        try:
+            cfg = self._get(name)["configuration"]
+        except ViewerError as e:
+            if e.status == 404 and self.installed:
+                return None                       # like RestViewer: no configuration
+            raise
         return json.loads(json.dumps(cfg)) if cfg is not None else None
 
     def create(self, name: str, files: dict):

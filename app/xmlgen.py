@@ -26,7 +26,7 @@ import math
 import zipfile
 from xml.sax.saxutils import quoteattr
 
-from app import geom
+from app import customdata, geom
 
 UNIT_SCALE = {"mm": 1.0, "m": 1000.0, "inch": 25.4}
 TOOL_ATTRS = ('alpha="0" cuttr="1" cuttg="0.8392157" cuttb="0" noncuttr="0.4627451" '
@@ -145,7 +145,7 @@ def build_xml(project: dict) -> str:
                 attrs += ' clrr="%s" clrg="%s" clrb="%s"' % (f(c[0]), f(c[1]), f(c[2]))
             if mesh is not None:
                 attrs += " geo=%s" % quoteattr(mesh["file"])
-            attrs += _attr_text(p.get("xattrs"))
+            attrs += _attr_text(customdata.attrs_with(p.get("xattrs"), p.get("display_id")))
         if p.get("xml_extra"):
             out.append("%s<geometry %s>" % (ind(lvl), attrs))
             raw(p["xml_extra"], lvl + 1)
@@ -158,7 +158,8 @@ def build_xml(project: dict) -> str:
     def emit_frame(fr, lvl):
         f = numh if fr.get("src") else num
         out.append('%s<transform name=%s initialvalue="%s"%s>' % (
-            ind(lvl), quoteattr(fr["name"]), ",".join(f(v) for v in fr["matrix"]), _attr_text(fr.get("xattrs"))))
+            ind(lvl), quoteattr(fr["name"]), ",".join(f(v) for v in fr["matrix"]),
+            _attr_text(customdata.attrs_with(fr.get("xattrs"), fr.get("display_id")))))
         emit_level(fr.get("children") or [], lvl + 1)
         raw(fr.get("xml_extra"), lvl + 1)
         out.append("%s</transform>" % ind(lvl))

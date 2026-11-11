@@ -9,6 +9,7 @@ import copy
 import math
 import re
 
+from app import customdata
 from app.formula import check_formula
 
 NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_. -]{0,63}$")
@@ -131,6 +132,16 @@ def validate(p) -> dict:
             n.pop("src", None)
         attrs_of(n, "xattrs", nm)
         extras_of(n, nm)
+        if kind in ("part", "frame"):
+            # Display ID (customdata "displayid(<id>)"): a node read from a file gets it from its customdata attribute
+            if n.get("display_id") is None:
+                n["display_id"] = customdata.parse(n["xattrs"].get("customdata"))
+            try:
+                n["display_id"] = customdata.check_id(n["display_id"])
+            except ValueError as e:
+                raise ValueError(f"{nm!r}: {e}") from None
+        else:
+            n.pop("display_id", None)
         if kind == "axis":
             if nm in names:
                 raise ValueError(f"axis name {nm!r} is used twice (model axis names must be unique)")
